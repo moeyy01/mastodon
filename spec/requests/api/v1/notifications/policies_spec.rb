@@ -26,11 +26,14 @@ RSpec.describe 'Policies' do
         subject
 
         expect(response).to have_http_status(200)
-        expect(body_as_json).to include(
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body).to include(
           filter_not_following: false,
           filter_not_followers: false,
           filter_new_accounts: false,
           filter_private_mentions: true,
+          filter_bots: false,
           summary: a_hash_including(
             pending_requests_count: 1,
             pending_notifications_count: 0
@@ -51,19 +54,27 @@ RSpec.describe 'Policies' do
 
     it 'changes notification policy and returns an updated json object', :aggregate_failures do
       expect { subject }
-        .to change { NotificationPolicy.find_or_initialize_by(account: user.account).filter_not_following }.from(false).to(true)
+        .to change { NotificationPolicy.find_or_initialize_by(account: user.account).for_not_following.to_sym }.from(:accept).to(:filter)
 
       expect(response).to have_http_status(200)
-      expect(body_as_json).to include(
+      expect(response.content_type)
+        .to start_with('application/json')
+      expect(response.parsed_body).to include(
         filter_not_following: true,
         filter_not_followers: false,
         filter_new_accounts: false,
         filter_private_mentions: true,
+        filter_bots: false,
         summary: a_hash_including(
           pending_requests_count: 0,
           pending_notifications_count: 0
         )
       )
+    end
+
+    it 'updates filter_bots' do
+      put '/api/v1/notifications/policy', headers: headers, params: { filter_bots: true }
+      expect(response.parsed_body).to include(filter_bots: true)
     end
   end
 end

@@ -3,10 +3,9 @@
 require 'rails_helper'
 
 RSpec.describe 'API V1 Conversations' do
+  include_context 'with API authentication', oauth_scopes: 'read:statuses'
+
   let!(:user) { Fabricate(:user, account_attributes: { username: 'alice' }) }
-  let(:scopes) { 'read:statuses' }
-  let(:token)   { Fabricate(:accessible_access_token, resource_owner_id: user.id, scopes: scopes) }
-  let(:headers) { { 'Authorization' => "Bearer #{token.token}" } }
 
   let(:other) { Fabricate(:user) }
 
@@ -26,13 +25,15 @@ RSpec.describe 'API V1 Conversations' do
           prev: api_v1_conversations_url(limit: 1, min_id: Status.first.id),
           next: api_v1_conversations_url(limit: 1, max_id: Status.first.id)
         )
+      expect(response.content_type)
+        .to start_with('application/json')
     end
 
     it 'returns conversations', :aggregate_failures do
       get '/api/v1/conversations', headers: headers
 
-      expect(body_as_json.size).to eq 2
-      expect(body_as_json[0][:accounts].size).to eq 1
+      expect(response.parsed_body.size).to eq 2
+      expect(response.parsed_body.first[:accounts].size).to eq 1
     end
 
     context 'with since_id' do
@@ -40,7 +41,7 @@ RSpec.describe 'API V1 Conversations' do
         it 'returns conversations' do
           get '/api/v1/conversations', params: { since_id: Mastodon::Snowflake.id_at(1.hour.ago, with_random: false) }, headers: headers
 
-          expect(body_as_json.size).to eq 2
+          expect(response.parsed_body.size).to eq 2
         end
       end
 
@@ -48,7 +49,7 @@ RSpec.describe 'API V1 Conversations' do
         it 'returns no conversation' do
           get '/api/v1/conversations', params: { since_id: Mastodon::Snowflake.id_at(1.hour.from_now, with_random: false) }, headers: headers
 
-          expect(body_as_json.size).to eq 0
+          expect(response.parsed_body.size).to eq 0
         end
       end
     end

@@ -2,6 +2,9 @@
 Rails/BulkChangeTable:
   Enabled: false # Conflicts with strong_migrations features
 
+Rails/Delegate:
+  Enabled: false
+
 Rails/FilePath:
   EnforcedStyle: arguments
 
@@ -20,4 +23,7 @@ Rails/RakeEnvironment:
     - lib/tasks/statistics.rake
 
 Rails/SkipsModelValidations:
+  Enabled: false
+
+Rails/StrongParametersExpect:
   Enabled: false

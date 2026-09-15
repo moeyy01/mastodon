@@ -21,7 +21,7 @@ class Settings::DeletesController < Settings::BaseController
   private
 
   def resource_params
-    params.require(:form_delete_confirmation).permit(:password, :username)
+    params.expect(form_delete_confirmation: [:password, :username])
   end
 
   def require_not_suspended!
@@ -37,7 +37,7 @@ class Settings::DeletesController < Settings::BaseController
   end
 
   def destroy_account!
-    current_account.suspend!(origin: :local, block_email: false)
+    current_account.mark_deleted!
     AccountDeletionWorker.perform_async(current_user.account_id)
     sign_out
   end

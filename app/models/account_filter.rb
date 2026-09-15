@@ -14,6 +14,8 @@ class AccountFilter
     order
   ).freeze
 
+  IGNORED_PARAMS = %w(page).freeze
+
   attr_reader :params
 
   def initialize(params)
@@ -21,10 +23,10 @@ class AccountFilter
   end
 
   def results
-    scope = Account.includes(:account_stat, user: [:ips, :invite_request]).without_instance_actor.reorder(nil)
+    scope = Account.includes(:account_stat, user: [:ips, :invite_request]).without_instance_actor
 
     relevant_params.each do |key, value|
-      next if key.to_s == 'page'
+      next if IGNORED_PARAMS.include?(key.to_s)
 
       scope.merge!(scope_for(key, value)) if value.present?
     end
@@ -61,7 +63,7 @@ class AccountFilter
     when 'email'
       accounts_with_users.merge(User.matches_email(value.to_s.strip))
     when 'ip'
-      valid_ip?(value) ? accounts_with_users.merge(User.matches_ip(value).group('users.id, accounts.id')) : Account.none
+      valid_ip?(value) ? accounts_with_users.merge(User.matches_ip(value).group(users: [:id], accounts: [:id])) : Account.none
     when 'invited_by'
       invited_by_scope(value)
     when 'order'

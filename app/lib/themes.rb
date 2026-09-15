@@ -1,13 +1,10 @@
 # frozen_string_literal: true
 
-require 'singleton'
-require 'yaml'
-
 class Themes
   include Singleton
 
   THEME_COLORS = {
-    dark: '#191b22',
+    dark: '#181820',
     light: '#ffffff',
   }.freeze
 
@@ -16,6 +13,6 @@ class Themes
   end
 
   def names
-    ['system'] + @conf.keys
+    @conf.keys
   end
 end

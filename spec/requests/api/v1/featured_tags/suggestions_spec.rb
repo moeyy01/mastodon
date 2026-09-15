@@ -2,7 +2,7 @@
 
 require 'rails_helper'
 
-describe 'Featured Tags Suggestions API' do
+RSpec.describe 'Featured Tags Suggestions API' do
   let(:user)    { Fabricate(:user) }
   let(:token)   { Fabricate(:accessible_access_token, resource_owner_id: user.id, scopes: scopes) }
   let(:scopes)  { 'read:accounts' }
@@ -12,6 +12,7 @@ describe 'Featured Tags Suggestions API' do
   describe 'GET /api/v1/featured_tags/suggestions' do
     let!(:unused_featured_tag) { Fabricate(:tag, name: 'unused_featured_tag') }
     let!(:used_tag) { Fabricate(:tag, name: 'used_tag') }
+    let!(:used_tag_once) { Fabricate(:tag, name: 'used_tag_once') }
     let!(:used_featured_tag) { Fabricate(:tag, name: 'used_featured_tag') }
 
     before do
@@ -20,7 +21,12 @@ describe 'Featured Tags Suggestions API' do
       # Make relevant tags used by account
       status = Fabricate(:status, account: account)
       status.tags << used_tag
+      status.tags << used_tag_once
       status.tags << used_featured_tag
+
+      status2 = Fabricate(:status, account: account)
+      status2.tags << used_tag
+      status2.tags << used_featured_tag
 
       # Feature the relevant tags
       Fabricate :featured_tag, account: account, name: unused_featured_tag.name
@@ -32,7 +38,9 @@ describe 'Featured Tags Suggestions API' do
 
       expect(response)
         .to have_http_status(200)
-      expect(body_as_json)
+      expect(response.content_type)
+        .to start_with('application/json')
+      expect(response.parsed_body)
         .to contain_exactly(
           include(name: used_tag.name)
         )

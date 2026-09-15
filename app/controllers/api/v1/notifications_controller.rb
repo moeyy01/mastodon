@@ -7,6 +7,8 @@ class Api::V1::NotificationsController < Api::BaseController
   after_action :insert_pagination_headers, only: :index
 
   DEFAULT_NOTIFICATIONS_LIMIT = 40
+  DEFAULT_NOTIFICATIONS_COUNT_LIMIT = 100
+  MAX_NOTIFICATIONS_COUNT_LIMIT = 1_000
 
   def index
     with_read_replica do
@@ -14,12 +16,20 @@ class Api::V1::NotificationsController < Api::BaseController
       @relationships = StatusRelationshipsPresenter.new(target_statuses_from_notifications, current_user&.account_id)
     end
 
-    render json: @notifications, each_serializer: REST::NotificationSerializer, relationships: @relationships
+    render json: @notifications, each_serializer: REST::NotificationSerializer, relationships: @relationships, supported_notification_types: params[:supported_types]
+  end
+
+  def unread_count
+    limit = limit_param(DEFAULT_NOTIFICATIONS_COUNT_LIMIT, MAX_NOTIFICATIONS_COUNT_LIMIT)
+
+    with_read_replica do
+      render json: { count: browserable_account_notifications.paginate_by_min_id(limit, notification_marker&.last_read_id).count }
+    end
   end
 
   def show
     @notification = current_account.notifications.without_suspended.find(params[:id])
-    render json: @notification, serializer: REST::NotificationSerializer
+    render json: @notification, serializer: REST::NotificationSerializer, supported_notification_types: params[:supported_types]
   end
 
   def clear
@@ -54,6 +64,10 @@ class Api::V1::NotificationsController < Api::BaseController
     )
   end
 
+  def notification_marker
+    current_user.markers.find_by(timeline: 'notifications')
+  end
+
   def target_statuses_from_notifications
     @notifications.reject { |notification| notification.target_status.nil? }.map(&:target_status)
   end
@@ -75,6 +89,8 @@ class Api::V1::NotificationsController < Api::BaseController
   end
 
   def pagination_params(core_params)
-    params.slice(:limit, :account_id, :types, :exclude_types, :include_filtered).permit(:limit, :account_id, :include_filtered, types: [], exclude_types: []).merge(core_params)
+    params.slice(:limit, :account_id, :types, :exclude_types, :include_filtered, :supported_types)
+      .permit(:limit, :account_id, :include_filtered, types: [], exclude_types: [], supported_types: [])
+      .merge(core_params)
   end
 end

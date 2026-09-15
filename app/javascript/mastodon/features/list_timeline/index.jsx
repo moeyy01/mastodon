@@ -1,38 +1,33 @@
 import PropTypes from 'prop-types';
 import { PureComponent } from 'react';
 
-import { FormattedMessage, defineMessages, injectIntl } from 'react-intl';
+import { FormattedMessage } from 'react-intl';
 
-import { Helmet } from 'react-helmet';
-import { withRouter } from 'react-router-dom';
+import { Helmet } from '@unhead/react/helmet';
+import { Link, withRouter } from 'react-router-dom';
 
 import ImmutablePropTypes from 'react-immutable-proptypes';
 import { connect } from 'react-redux';
-
-import Toggle from 'react-toggle';
 
 import DeleteIcon from '@/material-icons/400-24px/delete.svg?react';
 import EditIcon from '@/material-icons/400-24px/edit.svg?react';
 import ListAltIcon from '@/material-icons/400-24px/list_alt.svg?react';
 import { addColumn, removeColumn, moveColumn } from 'mastodon/actions/columns';
-import { fetchList, updateList } from 'mastodon/actions/lists';
+import { fetchList } from 'mastodon/actions/lists';
 import { openModal } from 'mastodon/actions/modal';
 import { connectListStream } from 'mastodon/actions/streaming';
 import { expandListTimeline } from 'mastodon/actions/timelines';
-import Column from 'mastodon/components/column';
-import ColumnHeader from 'mastodon/components/column_header';
+import { Column } from '@/mastodon/components/column';
+import { ColumnHeader as LegacyColumnHeader } from '@/mastodon/components/column/header';
 import { Icon }  from 'mastodon/components/icon';
 import { LoadingIndicator } from 'mastodon/components/loading_indicator';
-import { RadioButton } from 'mastodon/components/radio_button';
 import BundleColumnError from 'mastodon/features/ui/components/bundle_column_error';
 import StatusListContainer from 'mastodon/features/ui/containers/status_list_container';
 import { WithRouterPropTypes } from 'mastodon/utils/react_router';
-
-const messages = defineMessages({
-  followed:   { id: 'lists.replies_policy.followed', defaultMessage: 'Any followed user' },
-  none:    { id: 'lists.replies_policy.none', defaultMessage: 'No one' },
-  list:  { id: 'lists.replies_policy.list', defaultMessage: 'Members of the list' },
-});
+import { isRedesignEnabled } from '@/mastodon/utils/environment';
+import { ColumnHeader, ColumnSettingsMenu } from '@/mastodon/components/column_header';
+import { MenuItem, MenuItemLink } from '@/mastodon/components/menu';
+import { MultiColumnMenuItems } from '@/mastodon/components/column_header/multicolumn_settings';
 
 const mapStateToProps = (state, props) => ({
   list: state.getIn(['lists', props.params.id]),
@@ -68,10 +63,6 @@ class ListTimeline extends PureComponent {
     dispatch(moveColumn(columnId, dir));
   };
 
-  handleHeaderClick = () => {
-    this.column.scrollTop();
-  };
-
   componentDidMount () {
     const { dispatch } = this.props;
     const { id } = this.props.params;
@@ -82,11 +73,10 @@ class ListTimeline extends PureComponent {
     this.disconnect = dispatch(connectListStream(id));
   }
 
-  UNSAFE_componentWillReceiveProps (nextProps) {
-    const { dispatch } = this.props;
-    const { id } = nextProps.params;
+  componentDidUpdate (prevProps) {
+    const { dispatch, params: {id} } = this.props;
 
-    if (id !== this.props.params.id) {
+    if (id !== prevProps.params.id) {
       if (this.disconnect) {
         this.disconnect();
         this.disconnect = null;
@@ -106,20 +96,9 @@ class ListTimeline extends PureComponent {
     }
   }
 
-  setRef = c => {
-    this.column = c;
-  };
-
   handleLoadMore = maxId => {
     const { id } = this.props.params;
     this.props.dispatch(expandListTimeline(id, { maxId }));
-  };
-
-  handleEditClick = () => {
-    this.props.dispatch(openModal({
-      modalType: 'LIST_EDITOR',
-      modalProps: { listId: this.props.params.id },
-    }));
   };
 
   handleDeleteClick = () => {
@@ -129,25 +108,11 @@ class ListTimeline extends PureComponent {
     dispatch(openModal({ modalType: 'CONFIRM_DELETE_LIST', modalProps: { listId: id, columnId } }));
   };
 
-  handleRepliesPolicyChange = ({ target }) => {
-    const { dispatch } = this.props;
-    const { id } = this.props.params;
-    dispatch(updateList(id, undefined, false, undefined, target.value));
-  };
-
-  onExclusiveToggle = ({ target }) => {
-    const { dispatch } = this.props;
-    const { id } = this.props.params;
-    dispatch(updateList(id, undefined, false, target.checked, undefined));
-  };
-
   render () {
-    const { hasUnread, columnId, multiColumn, list, intl } = this.props;
+    const { hasUnread, columnId, multiColumn, list } = this.props;
     const { id } = this.props.params;
     const pinned = !!columnId;
     const title  = list ? list.get('title') : id;
-    const replies_policy = list ? list.get('replies_policy') : undefined;
-    const isExclusive = list ? list.get('exclusive') : undefined;
 
     if (typeof list === 'undefined') {
       return (
@@ -164,58 +129,72 @@ class ListTimeline extends PureComponent {
     }
 
     return (
-      <Column bindToDocument={!multiColumn} ref={this.setRef} label={title}>
-        <ColumnHeader
-          icon='list-ul'
-          iconComponent={ListAltIcon}
-          active={hasUnread}
-          title={title}
-          onPin={this.handlePin}
-          onMove={this.handleMove}
-          onClick={this.handleHeaderClick}
-          pinned={pinned}
-          multiColumn={multiColumn}
-        >
-          <div className='column-settings'>
-            <section className='column-header__links'>
-              <button type='button' className='text-btn column-header__setting-btn' tabIndex={0} onClick={this.handleEditClick}>
-                <Icon id='pencil' icon={EditIcon} /> <FormattedMessage id='lists.edit' defaultMessage='Edit list' />
-              </button>
+      <Column bindToDocument={!multiColumn} label={title}>
+        {isRedesignEnabled() ? (
+          <ColumnHeader
+            title={title}
+            withBackButton={multiColumn && !pinned && 'auto'}
+            extraButtons={
+              <ColumnSettingsMenu
+                label={
+                  <FormattedMessage id='custom_feed.options' defaultMessage='Feed Options' />
+                }
+              >
+                <MenuItemLink as='link' to={`/lists/${id}/edit`}>
+                  <FormattedMessage id='custom_feed.edit' defaultMessage='Edit feed' />
+                </MenuItemLink>
+                <MenuItemLink as='link' to={`/lists/${id}/members`}>
+                  <FormattedMessage id='custom_feed.manage_accounts' defaultMessage='Manage members' />
+                </MenuItemLink>
+                <MenuItem onClick={this.handleDeleteClick}>
+                  <FormattedMessage id='custom_feed.delete' defaultMessage='Delete feed' />
+                </MenuItem>
+                {multiColumn &&
+                  <MultiColumnMenuItems
+                    withDivider
+                    pinned={pinned}
+                    onPin={this.handlePin}
+                    onMove={this.handleMove}
+                  />
+                }
+              </ColumnSettingsMenu>
+            }
+          />
+        ) : (
+          <LegacyColumnHeader
+            icon='list-ul'
+            iconComponent={ListAltIcon}
+            active={hasUnread}
+            title={title}
+            onPin={this.handlePin}
+            onMove={this.handleMove}
+            pinned={pinned}
+            multiColumn={multiColumn}
+            scrollTopOnClick
+          >
+            <div className='column-settings'>
+              <section className='column-header__links'>
+                <Link to={`/lists/${id}/edit`} className='text-btn column-header__setting-btn'>
+                  <Icon id='pencil' icon={EditIcon} /> <FormattedMessage id='lists.edit' defaultMessage='Edit list' />
+                </Link>
 
-              <button type='button' className='text-btn column-header__setting-btn' tabIndex={0} onClick={this.handleDeleteClick}>
-                <Icon id='trash' icon={DeleteIcon} /> <FormattedMessage id='lists.delete' defaultMessage='Delete list' />
-              </button>
-            </section>
-
-            <section>
-              <div className='setting-toggle'>
-                <Toggle id={`list-${id}-exclusive`} checked={isExclusive} onChange={this.onExclusiveToggle} />
-                <label htmlFor={`list-${id}-exclusive`} className='setting-toggle__label'>
-                  <FormattedMessage id='lists.exclusive' defaultMessage='Hide these posts from home' />
-                </label>
-              </div>
-            </section>
-
-            {replies_policy !== undefined && (
-              <section aria-labelledby={`list-${id}-replies-policy`}>
-                <h3 id={`list-${id}-replies-policy`}><FormattedMessage id='lists.replies_policy.title' defaultMessage='Show replies to:' /></h3>
-
-                <div className='column-settings__row'>
-                  { ['none', 'list', 'followed'].map(policy => (
-                    <RadioButton name='order' key={policy} value={policy} label={intl.formatMessage(messages[policy])} checked={replies_policy === policy} onChange={this.handleRepliesPolicyChange} />
-                  ))}
-                </div>
+                <button type='button' className='text-btn column-header__setting-btn' tabIndex={0} onClick={this.handleDeleteClick}>
+                  <Icon id='trash' icon={DeleteIcon} /> <FormattedMessage id='lists.delete' defaultMessage='Delete list' />
+                </button>
               </section>
-            )}
-          </div>
-        </ColumnHeader>
+            </div>
+          </LegacyColumnHeader>
+        )}
 
         <StatusListContainer
           trackScroll={!pinned}
           scrollKey={`list_timeline-${columnId}`}
           timelineId={`list:${id}`}
           onLoadMore={this.handleLoadMore}
-          emptyMessage={<FormattedMessage id='empty_column.list' defaultMessage='There is nothing in this list yet. When members of this list post new statuses, they will appear here.' />}
+          emptyMessage={isRedesignEnabled
+            ? <FormattedMessage id='empty_column.custom_feed' defaultMessage='There is nothing in this custom feed yet. When members of this feed post new statuses, they will appear here.' />
+            : <FormattedMessage id='empty_column.list' defaultMessage='There is nothing in this list yet. When members of this list post new statuses, they will appear here.' />
+          }
           bindToDocument={!multiColumn}
         />
 
@@ -229,4 +208,4 @@ class ListTimeline extends PureComponent {
 
 }
 
-export default withRouter(connect(mapStateToProps)(injectIntl(ListTimeline)));
+export default withRouter(connect(mapStateToProps)(ListTimeline));

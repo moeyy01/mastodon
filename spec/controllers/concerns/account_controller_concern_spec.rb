@@ -2,17 +2,18 @@
 
 require 'rails_helper'
 
-describe AccountControllerConcern do
+RSpec.describe AccountControllerConcern do
   controller(ApplicationController) do
-    include AccountControllerConcern
+    include AccountControllerConcern # rubocop:disable RSpec/DescribedClass
 
     def success
-      head 200
+      render plain: @account.username # rubocop:disable RSpec/InstanceVariable
     end
   end
 
   before do
     routes.draw { get 'success' => 'anonymous#success' }
+    request.host = Rails.configuration.x.local_domain
   end
 
   context 'when account is unconfirmed' do
@@ -32,7 +33,7 @@ describe AccountControllerConcern do
     end
   end
 
-  context 'when account is suspended' do
+  context 'when account is permanently suspended' do
     it 'returns http gone' do
       account = Fabricate(:account, suspended: true)
       get 'success', params: { account_username: account.username }
@@ -40,30 +41,44 @@ describe AccountControllerConcern do
     end
   end
 
-  context 'when account is deleted by owner' do
+  context 'when account is temporarily suspended' do
+    it 'returns http forbidden' do
+      account = Fabricate(:account)
+      account.suspend!
+      get 'success', params: { account_username: account.username }
+      expect(response).to have_http_status(403)
+    end
+  end
+
+  context 'when account is permanently deleted' do
     it 'returns http gone' do
-      account = Fabricate(:account, suspended: true, user: nil)
+      account = Fabricate(:account, requested_deletion: true)
       get 'success', params: { account_username: account.username }
       expect(response).to have_http_status(410)
+    end
+  end
+
+  context 'when account is pending deletion' do
+    it 'returns http forbidden' do
+      account = Fabricate(:account)
+      account.mark_deleted!
+      get 'success', params: { account_username: account.username }
+      expect(response).to have_http_status(403)
     end
   end
 
   context 'when account is not suspended' do
     let(:account) { Fabricate(:account, username: 'username') }
 
-    it 'assigns @account, returns success, and sets link headers' do
+    it 'Prepares the account, returns success, and sets link headers' do
       get 'success', params: { account_username: account.username }
 
-      expect(assigns(:account)).to eq account
-      expect(response).to have_http_status(200)
-      expect(response.headers['Link'].to_s).to eq(expected_link_headers)
-    end
-
-    def expected_link_headers
-      [
-        '<http://test.host/.well-known/webfinger?resource=acct%3Ausername%40cb6e6126.ngrok.io>; rel="lrdd"; type="application/jrd+json"',
-        '<https://cb6e6126.ngrok.io/users/username>; rel="alternate"; type="application/activity+json"',
-      ].join(', ')
+      expect(response)
+        .to have_http_status(200)
+        .and have_http_link_header(webfinger_url(resource: account.to_webfinger_s)).for(rel: 'lrdd', type: 'application/jrd+json')
+        .and have_http_link_header(ActivityPub::TagManager.instance.uri_for(account)).for(rel: 'alternate', type: 'application/activity+json')
+      expect(response.parsed_body)
+        .to eq(account.username)
     end
   end
 end

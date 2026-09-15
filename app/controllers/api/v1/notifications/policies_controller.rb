@@ -8,12 +8,12 @@ class Api::V1::Notifications::PoliciesController < Api::BaseController
   before_action :set_policy
 
   def show
-    render json: @policy, serializer: REST::NotificationPolicySerializer
+    render json: @policy, serializer: REST::V1::NotificationPolicySerializer
   end
 
   def update
     @policy.update!(resource_params)
-    render json: @policy, serializer: REST::NotificationPolicySerializer
+    render json: @policy, serializer: REST::V1::NotificationPolicySerializer
   end
 
   private
@@ -31,7 +31,8 @@ class Api::V1::Notifications::PoliciesController < Api::BaseController
       :filter_not_following,
       :filter_not_followers,
       :filter_new_accounts,
-      :filter_private_mentions
+      :filter_private_mentions,
+      :filter_bots
     )
   end
 end

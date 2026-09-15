@@ -1,26 +1,31 @@
 import { createRoot } from 'react-dom/client';
 
-import './public-path';
-
 import { IntlMessageFormat } from 'intl-messageformat';
-import type { MessageDescriptor, PrimitiveType } from 'react-intl';
+import type {
+  FormatDateOptions,
+  IntlShape,
+  MessageDescriptor,
+  PrimitiveType,
+} from 'react-intl';
 import { defineMessages } from 'react-intl';
 
-import Rails from '@rails/ujs';
 import axios from 'axios';
+import { on } from 'delegated-events';
 import { throttle } from 'lodash';
 
-import { start } from '../mastodon/common';
-import { timeAgoString } from '../mastodon/components/relative_timestamp';
-import emojify from '../mastodon/features/emoji/emoji';
-import loadKeyboardExtensions from '../mastodon/load_keyboard_extensions';
-import { loadLocale, getLocale } from '../mastodon/locales';
-import { loadPolyfills } from '../mastodon/polyfills';
-import ready from '../mastodon/ready';
+import { determineEmojiMode } from '@/mastodon/features/emoji/mode';
+import { updateHtmlWithEmoji } from '@/mastodon/features/emoji/render';
+import type { InitialState } from '@/mastodon/initial_state';
+import loadKeyboardExtensions from '@/mastodon/load_keyboard_extensions';
+import { loadLocale, getLocale } from '@/mastodon/locales';
+import { loadPolyfills } from '@/mastodon/polyfills';
+import ready from '@/mastodon/ready';
+import { assetHost } from '@/mastodon/utils/config';
+import { getNestedProperty } from '@/mastodon/utils/objects';
+import { isDarkMode } from '@/mastodon/utils/theme';
+import { formatTime } from '@/mastodon/utils/time';
 
 import 'cocoon-js-vanilla';
-
-start();
 
 const messages = defineMessages({
   usernameTaken: {
@@ -37,44 +42,7 @@ const messages = defineMessages({
   },
 });
 
-interface SetHeightMessage {
-  type: 'setHeight';
-  id: string;
-  height: number;
-}
-
-function isSetHeightMessage(data: unknown): data is SetHeightMessage {
-  if (
-    data &&
-    typeof data === 'object' &&
-    'type' in data &&
-    data.type === 'setHeight'
-  )
-    return true;
-  else return false;
-}
-
-window.addEventListener('message', (e) => {
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- typings are not correct, it can be null in very rare cases
-  if (!e.data || !isSetHeightMessage(e.data) || !window.parent) return;
-
-  const data = e.data;
-
-  ready(() => {
-    window.parent.postMessage(
-      {
-        type: 'setHeight',
-        id: data.id,
-        height: document.getElementsByTagName('html')[0]?.scrollHeight,
-      },
-      '*',
-    );
-  }).catch((e: unknown) => {
-    console.error('Error in setHeightMessage postMessage', e);
-  });
-});
-
-function loaded() {
+async function loaded() {
   const { messages: localeData } = getLocale();
 
   const locale = document.documentElement.lang;
@@ -100,20 +68,41 @@ function loaded() {
   const formatMessage = (
     { id, defaultMessage }: MessageDescriptor,
     values?: Record<string, PrimitiveType>,
-  ) => {
+  ): string => {
     let message: string | undefined = undefined;
 
     if (id) message = localeData[id];
 
-    if (!message) message = defaultMessage as string;
+    message ??= defaultMessage as string;
 
     const messageFormat = new IntlMessageFormat(message, locale);
     return messageFormat.format(values) as string;
   };
 
-  document.querySelectorAll('.emojify').forEach((content) => {
-    content.innerHTML = emojify(content.innerHTML);
-  });
+  let emojiStyle = 'auto';
+  const initialStateText =
+    document.getElementById('initial-state')?.textContent;
+  if (initialStateText) {
+    const stateEmojiStyle = getNestedProperty(
+      JSON.parse(initialStateText) as InitialState,
+      'meta',
+      'emoji_style',
+    );
+    if (typeof stateEmojiStyle === 'string') {
+      emojiStyle = stateEmojiStyle;
+    }
+  }
+  const emojiMode = determineEmojiMode(emojiStyle);
+  const darkTheme = isDarkMode();
+  for (const element of document.querySelectorAll('.emojify')) {
+    await updateHtmlWithEmoji({
+      assetHost,
+      element,
+      locale,
+      mode: emojiMode,
+      darkTheme,
+    });
+  }
 
   document
     .querySelectorAll<HTMLTimeElement>('time.formatted')
@@ -156,7 +145,11 @@ function loaded() {
         formattedContent = dateFormat.format(datetime);
       }
 
-      content.title = formattedContent;
+      const timeGiven = content.dateTime.includes('T');
+      content.title = timeGiven
+        ? dateTimeFormat.format(datetime)
+        : dateFormat.format(datetime);
+
       content.textContent = formattedContent;
     });
 
@@ -164,31 +157,37 @@ function loaded() {
     .querySelectorAll<HTMLTimeElement>('time.time-ago')
     .forEach((content) => {
       const datetime = new Date(content.dateTime);
-      const now = new Date();
 
       const timeGiven = content.dateTime.includes('T');
       content.title = timeGiven
         ? dateTimeFormat.format(datetime)
         : dateFormat.format(datetime);
-      content.textContent = timeAgoString(
-        {
-          formatMessage,
-          formatDate: (date: Date, options) =>
+      const now = Date.now();
+      content.textContent = formatTime({
+        // We don't want to show future dates.
+        timestamp: Math.min(datetime.getTime(), now),
+        now,
+        intl: {
+          formatMessage: formatMessage as IntlShape['formatMessage'],
+          formatDate: (date: Date, options: FormatDateOptions) =>
             new Intl.DateTimeFormat(locale, options).format(date),
         },
-        datetime,
-        now.getTime(),
-        now.getFullYear(),
-        timeGiven,
-      );
+        noTime: !timeGiven,
+      });
     });
+
+  updateDefaultQuotePrivacyFromPrivacy(
+    document.querySelector('#user_settings_attributes_default_privacy'),
+  );
+
+  truncateRuleHints();
+
+  applyRailsA11yPatches();
 
   const reactComponents = document.querySelectorAll('[data-component]');
 
   if (reactComponents.length > 0) {
-    import(
-      /* webpackChunkName: "containers/media_container" */ '../mastodon/containers/media_container'
-    )
+    import('../mastodon/containers/media_container')
       .then(({ default: MediaContainer }) => {
         reactComponents.forEach((component) => {
           Array.from(component.children).forEach((child) => {
@@ -211,23 +210,32 @@ function loaded() {
       });
   }
 
-  Rails.delegate(
-    document,
-    'input#user_account_attributes_username',
+  on(
     'input',
+    'input#user_account_attributes_username',
     throttle(
       ({ target }) => {
         if (!(target instanceof HTMLInputElement)) return;
 
-        if (target.value && target.value.length > 0) {
+        const checkedUsername = target.value;
+        if (checkedUsername && checkedUsername.length > 0) {
           axios
-            .get('/api/v1/accounts/lookup', { params: { acct: target.value } })
+            .get('/api/v1/accounts/lookup', {
+              params: { acct: checkedUsername },
+            })
             .then(() => {
-              target.setCustomValidity(formatMessage(messages.usernameTaken));
+              // Only update the validity if the result is for the currently-typed username
+              if (checkedUsername === target.value) {
+                target.setCustomValidity(formatMessage(messages.usernameTaken));
+              }
+
               return true;
             })
             .catch(() => {
-              target.setCustomValidity('');
+              // Only update the validity if the result is for the currently-typed username
+              if (checkedUsername === target.value) {
+                target.setCustomValidity('');
+              }
             });
         } else {
           target.setCustomValidity('');
@@ -238,116 +246,47 @@ function loaded() {
     ),
   );
 
-  Rails.delegate(
-    document,
-    '#user_password,#user_password_confirmation',
-    'input',
-    () => {
-      const password = document.querySelector<HTMLInputElement>(
-        'input#user_password',
+  on('input', '#user_password,#user_password_confirmation', () => {
+    const password = document.querySelector<HTMLInputElement>(
+      'input#user_password',
+    );
+    const confirmation = document.querySelector<HTMLInputElement>(
+      'input#user_password_confirmation',
+    );
+    if (!confirmation || !password) return;
+
+    if (confirmation.value && confirmation.value.length > password.maxLength) {
+      confirmation.setCustomValidity(
+        formatMessage(messages.passwordExceedsLength),
       );
-      const confirmation = document.querySelector<HTMLInputElement>(
-        'input#user_password_confirmation',
+    } else if (password.value && password.value !== confirmation.value) {
+      confirmation.setCustomValidity(
+        formatMessage(messages.passwordDoesNotMatch),
       );
-      if (!confirmation || !password) return;
-
-      if (
-        confirmation.value &&
-        confirmation.value.length > password.maxLength
-      ) {
-        confirmation.setCustomValidity(
-          formatMessage(messages.passwordExceedsLength),
-        );
-      } else if (password.value && password.value !== confirmation.value) {
-        confirmation.setCustomValidity(
-          formatMessage(messages.passwordDoesNotMatch),
-        );
-      } else {
-        confirmation.setCustomValidity('');
-      }
-    },
-  );
-
-  Rails.delegate(
-    document,
-    'button.status__content__spoiler-link',
-    'click',
-    function () {
-      if (!(this instanceof HTMLButtonElement)) return;
-
-      const statusEl = this.parentNode?.parentNode;
-
-      if (
-        !(
-          statusEl instanceof HTMLDivElement &&
-          statusEl.classList.contains('.status__content')
-        )
-      )
-        return;
-
-      if (statusEl.dataset.spoiler === 'expanded') {
-        statusEl.dataset.spoiler = 'folded';
-        this.textContent = new IntlMessageFormat(
-          localeData['status.show_more'] ?? 'Show more',
-          locale,
-        ).format() as string;
-      } else {
-        statusEl.dataset.spoiler = 'expanded';
-        this.textContent = new IntlMessageFormat(
-          localeData['status.show_less'] ?? 'Show less',
-          locale,
-        ).format() as string;
-      }
-    },
-  );
-
-  document
-    .querySelectorAll<HTMLButtonElement>('button.status__content__spoiler-link')
-    .forEach((spoilerLink) => {
-      const statusEl = spoilerLink.parentNode?.parentNode;
-
-      if (
-        !(
-          statusEl instanceof HTMLDivElement &&
-          statusEl.classList.contains('.status__content')
-        )
-      )
-        return;
-
-      const message =
-        statusEl.dataset.spoiler === 'expanded'
-          ? (localeData['status.show_less'] ?? 'Show less')
-          : (localeData['status.show_more'] ?? 'Show more');
-      spoilerLink.textContent = new IntlMessageFormat(
-        message,
-        locale,
-      ).format() as string;
-    });
+    } else {
+      confirmation.setCustomValidity('');
+    }
+  });
 }
 
-Rails.delegate(
-  document,
-  '#edit_profile input[type=file]',
-  'change',
-  ({ target }) => {
-    if (!(target instanceof HTMLInputElement)) return;
+on('change', '#edit_profile input[type=file]', ({ target }) => {
+  if (!(target instanceof HTMLInputElement)) return;
 
-    const avatar = document.querySelector<HTMLImageElement>(
-      `img#${target.id}-preview`,
-    );
+  const avatar = document.querySelector<HTMLImageElement>(
+    `img#${target.id}-preview`,
+  );
 
-    if (!avatar) return;
+  if (!avatar) return;
 
-    let file: File | undefined;
-    if (target.files) file = target.files[0];
+  let file: File | undefined;
+  if (target.files) file = target.files[0];
 
-    const url = file ? URL.createObjectURL(file) : avatar.dataset.originalSrc;
+  const url = file ? URL.createObjectURL(file) : avatar.dataset.originalSrc;
 
-    if (url) avatar.src = url;
-  },
-);
+  if (url) avatar.src = url;
+});
 
-Rails.delegate(document, '.input-copy input', 'click', ({ target }) => {
+on('click', '.input-copy input', ({ target }) => {
   if (!(target instanceof HTMLInputElement)) return;
 
   target.focus();
@@ -355,7 +294,7 @@ Rails.delegate(document, '.input-copy input', 'click', ({ target }) => {
   target.setSelectionRange(0, target.value.length);
 });
 
-Rails.delegate(document, '.input-copy button', 'click', ({ target }) => {
+on('click', '.input-copy button', ({ target }) => {
   if (!(target instanceof HTMLButtonElement)) return;
 
   const input = target.parentNode?.querySelector<HTMLInputElement>(
@@ -364,31 +303,24 @@ Rails.delegate(document, '.input-copy button', 'click', ({ target }) => {
 
   if (!input) return;
 
-  const oldReadOnly = input.readOnly;
-
-  input.readOnly = false;
-  input.focus();
-  input.select();
-  input.setSelectionRange(0, input.value.length);
-
-  try {
-    if (document.execCommand('copy')) {
-      input.blur();
-
+  navigator.clipboard
+    .writeText(input.value)
+    .then(() => {
       const parent = target.parentElement;
 
-      if (!parent) return;
-      parent.classList.add('copied');
+      if (parent) {
+        parent.classList.add('copied');
 
-      setTimeout(() => {
-        parent.classList.remove('copied');
-      }, 700);
-    }
-  } catch (err) {
-    console.error(err);
-  }
+        setTimeout(() => {
+          parent.classList.remove('copied');
+        }, 700);
+      }
 
-  input.readOnly = oldReadOnly;
+      return true;
+    })
+    .catch((error: unknown) => {
+      console.error(error);
+    });
 });
 
 const toggleSidebar = () => {
@@ -411,29 +343,110 @@ const toggleSidebar = () => {
   sidebar.classList.toggle('visible');
 };
 
-Rails.delegate(document, '.sidebar__toggle__icon', 'click', () => {
+on('click', '.sidebar__toggle__icon', () => {
   toggleSidebar();
 });
 
-Rails.delegate(document, '.sidebar__toggle__icon', 'keydown', (e) => {
+on('keydown', '.sidebar__toggle__icon', (e) => {
   if (e.key === ' ' || e.key === 'Enter') {
     e.preventDefault();
     toggleSidebar();
   }
 });
 
-Rails.delegate(document, 'img.custom-emoji', 'mouseover', ({ target }) => {
+on('mouseover', 'img.custom-emoji', ({ target }) => {
   if (target instanceof HTMLImageElement && target.dataset.original)
     target.src = target.dataset.original;
 });
-Rails.delegate(document, 'img.custom-emoji', 'mouseout', ({ target }) => {
+on('mouseout', 'img.custom-emoji', ({ target }) => {
   if (target instanceof HTMLImageElement && target.dataset.static)
     target.src = target.dataset.static;
 });
 
+const setInputDisabled = (
+  input: HTMLInputElement | HTMLSelectElement,
+  disabled: boolean,
+) => {
+  input.disabled = disabled;
+
+  const wrapper = input.closest('.with_label');
+  if (wrapper) {
+    wrapper.classList.toggle('disabled', input.disabled);
+
+    const hidden =
+      input.type === 'checkbox' &&
+      wrapper.querySelector<HTMLInputElement>('input[type=hidden][value="0"]');
+    if (hidden) {
+      hidden.disabled = input.disabled;
+    }
+  }
+};
+
+const setInputHint = (
+  input: HTMLInputElement | HTMLSelectElement,
+  hintPrefix: string,
+) => {
+  const fieldWrapper = input.closest<HTMLElement>('.fields-group > .input');
+  if (!fieldWrapper) return;
+
+  const hint = fieldWrapper.dataset[`${hintPrefix}Hint`];
+  const hintElement =
+    fieldWrapper.querySelector<HTMLSpanElement>(':scope > .hint');
+
+  if (hint) {
+    if (hintElement) {
+      hintElement.textContent = hint;
+    } else {
+      const newHintElement = document.createElement('span');
+      newHintElement.className = 'hint';
+      newHintElement.textContent = hint;
+      fieldWrapper.appendChild(newHintElement);
+    }
+  } else {
+    hintElement?.remove();
+  }
+};
+
+on('change', '#account_statuses_cleanup_policy_enabled', ({ target }) => {
+  if (!(target instanceof HTMLInputElement) || !target.form) return;
+
+  target.form
+    .querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+      'input:not([type=hidden], #account_statuses_cleanup_policy_enabled), select',
+    )
+    .forEach((input) => {
+      setInputDisabled(input, !target.checked);
+    });
+});
+
+const updateDefaultQuotePrivacyFromPrivacy = (
+  privacySelect: EventTarget | null,
+) => {
+  if (!(privacySelect instanceof HTMLSelectElement) || !privacySelect.form)
+    return;
+
+  const select = privacySelect.form.querySelector<HTMLSelectElement>(
+    'select#user_settings_attributes_default_quote_policy',
+  );
+  if (!select) return;
+
+  setInputHint(select, privacySelect.value);
+
+  if (privacySelect.value === 'private') {
+    select.value = 'nobody';
+    setInputDisabled(select, true);
+  } else {
+    setInputDisabled(select, false);
+  }
+};
+
+on('change', '#user_settings_attributes_default_privacy', ({ target }) => {
+  updateDefaultQuotePrivacyFromPrivacy(target);
+});
+
 // Empty the honeypot fields in JS in case something like an extension
 // automatically filled them.
-Rails.delegate(document, '#registration_new_user,#new_user', 'submit', () => {
+on('submit', '#registration_new_user,#new_user', () => {
   [
     'user_website',
     'user_confirm_password',
@@ -446,6 +459,138 @@ Rails.delegate(document, '#registration_new_user,#new_user', 'submit', () => {
     }
   });
 });
+
+// Truncate long rule hints
+
+const MAX_RULE_HINT_LENGTH = 100;
+
+function truncateRuleHints() {
+  const ruleListItems =
+    document.querySelectorAll<HTMLLIElement>('.rules-list li');
+  if (!ruleListItems.length) return;
+
+  ruleListItems.forEach((item) => {
+    toggleRuleHint(item, true);
+  });
+}
+
+function toggleRuleHint(listItem: HTMLLIElement, isInitialSetup?: boolean) {
+  const hint = listItem.querySelector<HTMLSpanElement>(
+    '.rules-list__hint-text',
+  );
+  if (!hint) return;
+
+  const hintText = hint.innerHTML;
+  const hintToggleButton = listItem.querySelector('button');
+
+  if (hintText.length > MAX_RULE_HINT_LENGTH) {
+    // Store full hint in a data attribute, then truncate it with an '…'
+    hint.dataset.fullHint = hintText;
+    hint.innerHTML = `${hintText.slice(0, MAX_RULE_HINT_LENGTH - 1).trim()}…`;
+
+    if (hintToggleButton) {
+      // Reveal toggle button if needed
+      hintToggleButton.removeAttribute('hidden');
+      hintToggleButton.setAttribute('aria-expanded', 'false');
+    }
+  } else if (!isInitialSetup) {
+    const { fullHint } = hint.dataset;
+    if (fullHint) {
+      // Restore full hint from data attribute, then delete attribute
+      hint.innerHTML = fullHint;
+      delete hint.dataset.fullHint;
+
+      hintToggleButton?.setAttribute('aria-expanded', 'true');
+      hint.parentElement?.focus();
+    }
+  }
+}
+
+on('click', '.rules-list button', ({ target }) => {
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+
+  const listItem = target.closest('li');
+
+  if (listItem) {
+    toggleRuleHint(listItem);
+  }
+});
+
+/**
+ * Patch accessibility issues caused by Ruby Gems that
+ * don't produce accessible markup (simple-forms & simple-navigation)
+ */
+function applyRailsA11yPatches() {
+  /**
+   * Hides the asterisk added to labels of required form fields
+   * from assistive tech. (Those fields already have the `required` attribute)
+   */
+  document
+    .querySelectorAll<HTMLElement>('.simple_form label.required abbr')
+    .forEach((element) => {
+      element.setAttribute('aria-hidden', 'true');
+    });
+
+  /**
+   * Associate form field hints with their inputs via aria-describedby
+   */
+  document
+    .querySelectorAll<HTMLDivElement>('.simple_form .field_with_hint')
+    .forEach((field) => {
+      const inputs = field.querySelectorAll<
+        HTMLInputElement | HTMLTextAreaElement
+      >("input[type='text'], input[type='checkbox'], textarea");
+
+      const hint = field.querySelector<HTMLDivElement>('.hint');
+
+      // Bail out if there are more than one input as
+      // the association can't be safely made.
+      if (inputs.length !== 1 || !inputs[0] || !hint) {
+        return;
+      }
+
+      const input = inputs[0];
+      const inputId = input.getAttribute('id');
+      const hintId = `${inputId}_hint`;
+
+      input.setAttribute('aria-describedby', hintId);
+      hint.setAttribute('id', hintId);
+    });
+
+  /**
+   * Add fieldset-like group labels ("legends") to the date-of-birth selector
+   * and groups of radio buttons
+   */
+  const groups = document.querySelectorAll<HTMLDivElement>(
+    '.simple_form .date_of_birth, .simple_form .input.with_label.radio_buttons',
+  );
+  groups.forEach((groupWrapper) => {
+    // This is the element serving as the label of the group.
+    const groupLabel = groupWrapper.querySelector<HTMLLabelElement>('label');
+    const labelWithId =
+      groupWrapper.querySelector<HTMLLabelElement>('label[for]');
+    const groupHint = groupWrapper.querySelector<HTMLDivElement>('.hint');
+
+    // We need a unique ID to generate the aria associations. If `groupLabel`
+    // doesn't have one, we just take the first label with a `for` attribute
+    // that we can find, which is fine because we'll modify it before use.
+    const inputId =
+      groupLabel?.getAttribute('for') ?? labelWithId?.getAttribute('for');
+    const labelId = `${inputId}_label`;
+    const hintId = `${inputId}_hint`;
+
+    groupLabel?.setAttribute('id', labelId);
+    groupHint?.setAttribute('id', hintId);
+
+    groupWrapper.setAttribute('role', 'group');
+    groupWrapper.setAttribute('aria-labelledby', labelId);
+    if (groupHint) {
+      groupWrapper.setAttribute('aria-describedby', hintId);
+    }
+  });
+}
 
 function main() {
   ready(loaded).catch((error: unknown) => {

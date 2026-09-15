@@ -12,6 +12,9 @@ class SearchQueryTransformer < Parslet::Transform
     in
   ).freeze
 
+  class TransformerError < StandardError; end
+  class QueryError < StandardError; end
+
   class Query
     def initialize(clauses, options = {})
       raise ArgumentError if options[:current_account].nil?
@@ -20,6 +23,7 @@ class SearchQueryTransformer < Parslet::Transform
       @options = options
 
       flags_from_clauses!
+      validate_clauses!
     end
 
     def request
@@ -34,8 +38,17 @@ class SearchQueryTransformer < Parslet::Transform
 
     private
 
+    def validate_clauses!
+      # At least one clause should be a positive match unless searching within the library
+      # `from:me` (or `from:<self>`) is effectively a library-scoped query, so allow it without `in:library`
+      return if @flags['in'] == 'library'
+      return if filter_clauses.any? { |clause| clause.is_a?(PrefixClause) && clause.prefix == 'from' && !clause.negated? && clause.term == @options[:current_account].id }
+
+      raise QueryError, 'At least one keyword or phrase is required' if (must_clauses + filter_clauses).none? { |clause| clause.is_a?(TermClause) && clause.term.present? }
+    end
+
     def clauses_by_operator
-      @clauses_by_operator ||= @clauses.compact.chunk(&:operator).to_h
+      @clauses_by_operator ||= @clauses.compact.group_by(&:operator)
     end
 
     def flags_from_clauses!
@@ -107,7 +120,7 @@ class SearchQueryTransformer < Parslet::Transform
         when '-'
           :must_not
         else
-          raise "Unknown operator: #{str}"
+          raise TransformerError, "Unknown operator: #{str}"
         end
       end
     end
@@ -130,20 +143,15 @@ class SearchQueryTransformer < Parslet::Transform
     end
   end
 
-  class PhraseClause
-    attr_reader :operator, :phrase
-
-    def initialize(operator, phrase)
-      @operator = Operator.symbol(operator)
-      @phrase = phrase
-    end
-
+  class PhraseClause < TermClause
     def to_query
-      { match_phrase: { text: { query: @phrase } } }
+      { match_phrase: { text: { query: @term } } }
     end
   end
 
   class PrefixClause
+    EPOCH_RE = /\A\d+\z/
+
     attr_reader :operator, :prefix, :term
 
     def initialize(prefix, operator, term, options = {})
@@ -168,20 +176,20 @@ class SearchQueryTransformer < Parslet::Transform
       when 'before'
         @filter = :created_at
         @type = :range
-        @term = { lt: term, time_zone: @options[:current_account]&.user_time_zone.presence || 'UTC' }
+        @term = { lt: date_from_term(term), time_zone: @options[:current_account]&.user_time_zone.presence || 'UTC' }
       when 'after'
         @filter = :created_at
         @type = :range
-        @term = { gt: term, time_zone: @options[:current_account]&.user_time_zone.presence || 'UTC' }
+        @term = { gt: date_from_term(term), time_zone: @options[:current_account]&.user_time_zone.presence || 'UTC' }
       when 'during'
         @filter = :created_at
         @type = :range
-        @term = { gte: term, lte: term, time_zone: @options[:current_account]&.user_time_zone.presence || 'UTC' }
+        @term = { gte: date_from_term(term), lte: date_from_term(term), time_zone: @options[:current_account]&.user_time_zone.presence || 'UTC' }
       when 'in'
         @operator = :flag
         @term = term
       else
-        raise "Unknown prefix: #{prefix}"
+        raise TransformerError, "Unknown prefix: #{prefix}"
       end
     end
 
@@ -191,6 +199,10 @@ class SearchQueryTransformer < Parslet::Transform
       else
         { @type => { @filter => @term } }
       end
+    end
+
+    def negated?
+      @negated
     end
 
     private
@@ -222,6 +234,11 @@ class SearchQueryTransformer < Parslet::Transform
 
       term
     end
+
+    def date_from_term(term)
+      DateTime.iso8601(term) unless term.match?(EPOCH_RE) # This will raise Date::Error if the date is invalid
+      term
+    end
   end
 
   rule(clause: subtree(:clause)) do
@@ -238,7 +255,7 @@ class SearchQueryTransformer < Parslet::Transform
     elsif clause[:phrase]
       PhraseClause.new(operator, term)
     else
-      raise "Unexpected clause type: #{clause}"
+      raise TransformerError, "Unexpected clause type: #{clause}"
     end
   end
 

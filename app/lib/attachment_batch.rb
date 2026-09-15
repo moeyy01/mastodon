@@ -54,10 +54,9 @@ class AttachmentBatch
     records.each do |record|
       @attachment_names.each do |attachment_name|
         attachment = record.public_send(attachment_name)
-        styles     = BASE_STYLES | attachment.styles.keys
-
         next if attachment.blank?
 
+        styles = BASE_STYLES | attachment.styles.keys
         styles.each do |style|
           case @storage_mode
           when :s3
@@ -77,10 +76,22 @@ class AttachmentBatch
           when :fog
             logger.debug { "Deleting #{attachment.path(style)}" }
 
+            retries = 0
             begin
               attachment.send(:directory).files.new(key: attachment.path(style)).destroy
-            rescue Fog::Storage::OpenStack::NotFound
-              # Ignore failure to delete a file that has already been deleted
+            rescue Fog::OpenStack::Storage::NotFound
+              logger.debug "Will ignore because file is not found #{attachment.path(style)}"
+            rescue => e
+              retries += 1
+
+              if retries < MAX_RETRY
+                logger.debug "Retry #{retries}/#{MAX_RETRY} after #{e.message}"
+                sleep 2**retries
+                retry
+              else
+                logger.error "Batch deletion from fog failed after #{e.message}"
+                raise e
+              end
             end
           when :azure
             logger.debug { "Deleting #{attachment.path(style)}" }
@@ -96,30 +107,46 @@ class AttachmentBatch
     # objects can be processed at once, so we have to potentially
     # separate them into multiple calls.
 
-    retries = 0
     keys.each_slice(LIMIT) do |keys_slice|
       logger.debug { "Deleting #{keys_slice.size} objects" }
-
-      bucket.delete_objects(delete: {
-        objects: keys_slice.map { |key| { key: key } },
-        quiet: true,
-      })
-    rescue => e
-      retries += 1
-
-      if retries < MAX_RETRY
-        logger.debug "Retry #{retries}/#{MAX_RETRY} after #{e.message}"
-        sleep 2**retries
-        retry
-      else
-        logger.error "Batch deletion from S3 failed after #{e.message}"
-        raise e
+      retries = 0 # Reset for each slice
+      begin
+        with_overridden_timeout(bucket.client, 120) do
+          bucket.delete_objects(delete: {
+            objects: keys_slice.map { |key| { key: key } },
+            quiet: true,
+          })
+        end
+      rescue => e
+        retries += 1
+        if retries < MAX_RETRY
+          logger.debug "Retry #{retries}/#{MAX_RETRY} after #{e.message}"
+          sleep 2**retries
+          retry
+        else
+          logger.error "Batch deletion from S3 failed after #{e.message}"
+          raise e
+        end
       end
     end
   end
 
   def bucket
     @bucket ||= records.first.public_send(@attachment_names.first).s3_bucket
+  end
+
+  # Currently, the aws-sdk-s3 gem does not offer a way to cleanly override the timeout
+  # per-request. So we change the client's config instead. As this client will likely
+  # be re-used for other jobs, restore its original configuration in an `ensure` block.
+  def with_overridden_timeout(s3_client, longer_read_timeout)
+    original_timeout = s3_client.config.http_read_timeout
+    s3_client.config.http_read_timeout = [original_timeout, longer_read_timeout].max
+
+    begin
+      yield
+    ensure
+      s3_client.config.http_read_timeout = original_timeout
+    end
   end
 
   def nullified_attributes

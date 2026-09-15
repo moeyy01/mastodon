@@ -1,23 +1,32 @@
 import PropTypes from 'prop-types';
-import { useRef, useCallback, useEffect } from 'react';
+import { useCallback, useEffect } from 'react';
 
-import { defineMessages, useIntl } from 'react-intl';
+import { defineMessages, useIntl, FormattedMessage } from 'react-intl';
 
-import { Helmet } from 'react-helmet';
+import { Helmet } from '@unhead/react/helmet';
 
 import { useSelector, useDispatch } from 'react-redux';
 
+import DeleteIcon from '@/material-icons/400-24px/delete.svg?react';
 import DoneIcon from '@/material-icons/400-24px/done.svg?react';
 import InventoryIcon from '@/material-icons/400-24px/inventory_2.svg?react';
-import VolumeOffIcon from '@/material-icons/400-24px/volume_off.svg?react';
-import { fetchNotificationRequest, fetchNotificationsForRequest, expandNotificationsForRequest, acceptNotificationRequest, dismissNotificationRequest } from 'mastodon/actions/notifications';
-import Column from 'mastodon/components/column';
-import ColumnHeader from 'mastodon/components/column_header';
+import {
+  fetchNotificationRequest,
+  fetchNotificationsForRequest,
+  expandNotificationsForRequest,
+  acceptNotificationRequest,
+  dismissNotificationRequest,
+} from 'mastodon/actions/notification_requests';
+import { Column } from '@/mastodon/components/column';
+import { ColumnHeader as LegacyColumnHeader } from '@/mastodon/components/column/header';
 import { IconButton } from 'mastodon/components/icon_button';
 import ScrollableList from 'mastodon/components/scrollable_list';
 import { SensitiveMediaContextProvider } from 'mastodon/features/ui/util/sensitive_media_context';
 
 import NotificationContainer from './containers/notification_container';
+import { isRedesignEnabled } from '@/mastodon/utils/environment';
+import { ColumnHeader, ColumnHeaderButton } from '@/mastodon/components/column_header';
+import { CheckIcon, XIcon } from '@phosphor-icons/react';
 
 const messages = defineMessages({
   title: { id: 'notification_requests.notifications_from', defaultMessage: 'Notifications from {name}' },
@@ -25,90 +34,99 @@ const messages = defineMessages({
   dismiss: { id: 'notification_requests.dismiss', defaultMessage: 'Dismiss' },
 });
 
-const selectChild = (ref, index, alignTop) => {
-  const container = ref.current.node;
-  const element = container.querySelector(`article:nth-of-type(${index + 1}) .focusable`);
-
-  if (element) {
-    if (alignTop && container.scrollTop > element.offsetTop) {
-      element.scrollIntoView(true);
-    } else if (!alignTop && container.scrollTop + container.clientHeight < element.offsetTop + element.offsetHeight) {
-      element.scrollIntoView(false);
-    }
-
-    element.focus();
-  }
-};
-
 export const NotificationRequest = ({ multiColumn, params: { id } }) => {
-  const columnRef = useRef();
   const intl = useIntl();
   const dispatch = useDispatch();
-  const notificationRequest = useSelector(state => state.getIn(['notificationRequests', 'current', 'item', 'id']) === id ? state.getIn(['notificationRequests', 'current', 'item']) : null);
-  const accountId = notificationRequest?.get('account');
+  const notificationRequest = useSelector(state => state.notificationRequests.current.item?.id === id ? state.notificationRequests.current.item : null);
+  const accountId = notificationRequest?.account_id;
   const account = useSelector(state => state.getIn(['accounts', accountId]));
-  const notifications = useSelector(state => state.getIn(['notificationRequests', 'current', 'notifications', 'items']));
-  const isLoading = useSelector(state => state.getIn(['notificationRequests', 'current', 'notifications', 'isLoading']));
-  const hasMore = useSelector(state => !!state.getIn(['notificationRequests', 'current', 'notifications', 'next']));
-  const removed = useSelector(state => state.getIn(['notificationRequests', 'current', 'removed']));
-
-  const handleHeaderClick = useCallback(() => {
-    columnRef.current?.scrollTop();
-  }, [columnRef]);
+  const notifications = useSelector(state => state.notificationRequests.current.notifications.items);
+  const isLoading = useSelector(state => state.notificationRequests.current.notifications.isLoading);
+  const hasMore = useSelector(state => !!state.notificationRequests.current.notifications.next);
+  const removed = useSelector(state => state.notificationRequests.current.removed);
 
   const handleLoadMore = useCallback(() => {
-    dispatch(expandNotificationsForRequest());
-  }, [dispatch]);
+    dispatch(expandNotificationsForRequest({ accountId }));
+  }, [dispatch, accountId]);
 
   const handleDismiss = useCallback(() => {
-    dispatch(dismissNotificationRequest(id));
+    dispatch(dismissNotificationRequest({ id }));
   }, [dispatch, id]);
 
   const handleAccept = useCallback(() => {
-    dispatch(acceptNotificationRequest(id));
+    dispatch(acceptNotificationRequest({ id }));
   }, [dispatch, id]);
 
-  const handleMoveUp = useCallback(id => {
-    const elementIndex = notifications.findIndex(item => item !== null && item.get('id') === id) - 1;
-    selectChild(columnRef, elementIndex, true);
-  }, [columnRef, notifications]);
-
-  const handleMoveDown = useCallback(id => {
-    const elementIndex = notifications.findIndex(item => item !== null && item.get('id') === id) + 1;
-    selectChild(columnRef, elementIndex, false);
-  }, [columnRef, notifications]);
-
   useEffect(() => {
-    dispatch(fetchNotificationRequest(id));
+    dispatch(fetchNotificationRequest({ id }));
   }, [dispatch, id]);
 
   useEffect(() => {
     if (accountId) {
-      dispatch(fetchNotificationsForRequest(accountId));
+      dispatch(fetchNotificationsForRequest({ accountId }));
     }
   }, [dispatch, accountId]);
 
   const columnTitle = intl.formatMessage(messages.title, { name: account?.get('display_name') || account?.get('username') });
 
+  let explainer = null;
+
+  if (account?.limited) {
+    const isLocal = account.acct.indexOf('@') === -1;
+    explainer = (
+      <div className='dismissable-banner'>
+        <div className='dismissable-banner__message'>
+          {isLocal ? (
+            <FormattedMessage id='notification_requests.explainer_for_limited_account' defaultMessage='Notifications from this account have been filtered because the account has been limited by a moderator.' />
+          ) : (
+            <FormattedMessage id='notification_requests.explainer_for_limited_remote_account' defaultMessage='Notifications from this account have been filtered because the account or its server has been limited by a moderator.' />
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <Column bindToDocument={!multiColumn} ref={columnRef} label={columnTitle}>
-      <ColumnHeader
-        icon='archive'
-        iconComponent={InventoryIcon}
-        title={columnTitle}
-        onClick={handleHeaderClick}
-        multiColumn={multiColumn}
-        showBackButton
-        extraButton={!removed && (
-          <>
-            <IconButton className='column-header__button' iconComponent={VolumeOffIcon} onClick={handleDismiss} title={intl.formatMessage(messages.dismiss)} />
-            <IconButton className='column-header__button' iconComponent={DoneIcon} onClick={handleAccept} title={intl.formatMessage(messages.accept)} />
-          </>
-        )}
-      />
+    <Column bindToDocument={!multiColumn} label={columnTitle}>
+      {isRedesignEnabled() ? (
+        <ColumnHeader
+          withBackButton
+          title={columnTitle}
+          extraButtons={
+            <>
+              <ColumnHeaderButton icon={XIcon} onClick={handleDismiss}>
+                {intl.formatMessage(messages.dismiss)}
+              </ColumnHeaderButton>
+              <ColumnHeaderButton
+                icon={CheckIcon}
+                variant='solid'
+                onClick={handleAccept}
+              >
+                {intl.formatMessage(messages.accept)}
+              </ColumnHeaderButton>
+            </>
+          }
+        />
+      ) : (
+        <LegacyColumnHeader
+          icon='archive'
+          iconComponent={InventoryIcon}
+          title={columnTitle}
+          multiColumn={multiColumn}
+          showBackButton
+          scrollTopOnClick
+          extraButton={!removed && (
+            <>
+              <IconButton className='column-header__button' iconComponent={DeleteIcon} onClick={handleDismiss} title={intl.formatMessage(messages.dismiss)} />
+              <IconButton className='column-header__button' iconComponent={DoneIcon} onClick={handleAccept} title={intl.formatMessage(messages.accept)} />
+            </>
+          )}
+        />
+      )}
 
       <SensitiveMediaContextProvider hideMediaByDefault>
         <ScrollableList
+          prepend={explainer}
           scrollKey={`notification_requests/${id}`}
           trackScroll={!multiColumn}
           bindToDocument={!multiColumn}
@@ -122,8 +140,6 @@ export const NotificationRequest = ({ multiColumn, params: { id } }) => {
               key={item.get('id')}
               notification={item}
               accountId={item.get('account')}
-              onMoveUp={handleMoveUp}
-              onMoveDown={handleMoveDown}
             />
           ))}
         </ScrollableList>

@@ -3,11 +3,7 @@
 require 'rails_helper'
 
 RSpec.describe 'Account actions' do
-  let(:role)    { UserRole.find_by(name: 'Admin') }
-  let(:user)    { Fabricate(:user, role: role) }
-  let(:scopes)  { 'admin:write admin:write:accounts' }
-  let(:token)   { Fabricate(:accessible_access_token, resource_owner_id: user.id, scopes: scopes) }
-  let(:headers) { { 'Authorization' => "Bearer #{token.token}" } }
+  include_context 'with API authentication', user_fabricator: :admin_user, oauth_scopes: 'admin:write admin:write:accounts'
 
   shared_examples 'a successful notification delivery' do
     it 'notifies the user about the action taken', :inline_jobs do
@@ -55,12 +51,15 @@ RSpec.describe 'Account actions' do
 
       it_behaves_like 'forbidden for wrong scope', 'admin:read admin:read:accounts'
       it_behaves_like 'forbidden for wrong role', ''
+      it_behaves_like 'forbidden for disabled user'
       it_behaves_like 'a successful notification delivery'
       it_behaves_like 'a successful logged action', :disable, :user
 
       it 'disables the target account' do
         expect { subject }.to change { target_account.reload.user_disabled? }.from(false).to(true)
         expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
 
@@ -69,12 +68,15 @@ RSpec.describe 'Account actions' do
 
       it_behaves_like 'forbidden for wrong scope', 'admin:read admin:read:accounts'
       it_behaves_like 'forbidden for wrong role', ''
+      it_behaves_like 'forbidden for disabled user'
       it_behaves_like 'a successful notification delivery'
       it_behaves_like 'a successful logged action', :sensitive, :account
 
       it 'marks the target account as sensitive' do
         expect { subject }.to change { target_account.reload.sensitized? }.from(false).to(true)
         expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
 
@@ -83,12 +85,15 @@ RSpec.describe 'Account actions' do
 
       it_behaves_like 'forbidden for wrong scope', 'admin:read admin:read:accounts'
       it_behaves_like 'forbidden for wrong role', ''
+      it_behaves_like 'forbidden for disabled user'
       it_behaves_like 'a successful notification delivery'
       it_behaves_like 'a successful logged action', :silence, :account
 
       it 'marks the target account as silenced' do
         expect { subject }.to change { target_account.reload.silenced? }.from(false).to(true)
         expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
 
@@ -97,12 +102,15 @@ RSpec.describe 'Account actions' do
 
       it_behaves_like 'forbidden for wrong scope', 'admin:read admin:read:accounts'
       it_behaves_like 'forbidden for wrong role', ''
+      it_behaves_like 'forbidden for disabled user'
       it_behaves_like 'a successful notification delivery'
       it_behaves_like 'a successful logged action', :suspend, :account
 
       it 'marks the target account as suspended' do
         expect { subject }.to change { target_account.reload.suspended? }.from(false).to(true)
         expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
 
@@ -115,6 +123,8 @@ RSpec.describe 'Account actions' do
         subject
 
         expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
 
@@ -125,6 +135,8 @@ RSpec.describe 'Account actions' do
         subject
 
         expect(response).to have_http_status(422)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
 
@@ -135,6 +147,8 @@ RSpec.describe 'Account actions' do
         subject
 
         expect(response).to have_http_status(422)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
   end

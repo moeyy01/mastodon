@@ -3,16 +3,18 @@
 import type { AccountWarningAction } from 'mastodon/models/notification_group';
 
 import type { ApiAccountJSON } from './accounts';
+import type { ApiCollectionJSON } from './collections';
 import type { ApiReportJSON } from './reports';
 import type { ApiStatusJSON } from './statuses';
 
 // See app/model/notification.rb
-export const allNotificationTypes = [
+export const allNotificationTypes: NotificationType[] = [
   'follow',
   'follow_request',
   'favourite',
   'reblog',
   'mention',
+  'quote',
   'poll',
   'status',
   'update',
@@ -20,6 +22,9 @@ export const allNotificationTypes = [
   'admin.report',
   'moderation_warning',
   'severed_relationships',
+  'annual_report',
+  'added_to_collection',
+  'collection_update',
 ];
 
 export type NotificationWithStatusType =
@@ -27,8 +32,10 @@ export type NotificationWithStatusType =
   | 'reblog'
   | 'status'
   | 'mention'
+  | 'quote'
   | 'poll'
-  | 'update';
+  | 'update'
+  | 'quoted_update';
 
 export type NotificationType =
   | NotificationWithStatusType
@@ -37,7 +44,10 @@ export type NotificationType =
   | 'moderation_warning'
   | 'severed_relationships'
   | 'admin.sign_up'
-  | 'admin.report';
+  | 'admin.report'
+  | 'annual_report'
+  | 'added_to_collection'
+  | 'collection_update';
 
 export interface BaseNotificationJSON {
   id: string;
@@ -51,7 +61,7 @@ export interface BaseNotificationGroupJSON {
   group_key: string;
   notifications_count: number;
   type: NotificationType;
-  sample_accounts: ApiAccountJSON[];
+  sample_account_ids: string[];
   latest_page_notification_at: string; // FIXME: This will only be present if the notification group is returned in a paginated list, not requested directly
   most_recent_notification_id: string;
   page_min_id?: string;
@@ -60,12 +70,12 @@ export interface BaseNotificationGroupJSON {
 
 interface NotificationGroupWithStatusJSON extends BaseNotificationGroupJSON {
   type: NotificationWithStatusType;
-  status: ApiStatusJSON;
+  status_id: string | null;
 }
 
 interface NotificationWithStatusJSON extends BaseNotificationJSON {
   type: NotificationWithStatusType;
-  status: ApiStatusJSON;
+  status: ApiStatusJSON | null;
 }
 
 interface ReportNotificationGroupJSON extends BaseNotificationGroupJSON {
@@ -76,6 +86,26 @@ interface ReportNotificationGroupJSON extends BaseNotificationGroupJSON {
 interface ReportNotificationJSON extends BaseNotificationJSON {
   type: 'admin.report';
   report: ApiReportJSON;
+}
+
+interface AddedToCollectionNotificationGroupJSON extends BaseNotificationGroupJSON {
+  type: 'added_to_collection';
+  collection: ApiCollectionJSON | null;
+}
+
+interface AddedToCollectionNotificationJSON extends BaseNotificationJSON {
+  type: 'added_to_collection';
+  collection: ApiCollectionJSON | null;
+}
+
+interface CollectionUpdateNotificationGroupJSON extends BaseNotificationGroupJSON {
+  type: 'collection_update';
+  collection: ApiCollectionJSON | null;
+}
+
+interface CollectionUpdateNotificationJSON extends BaseNotificationJSON {
+  type: 'collection_update';
+  collection: ApiCollectionJSON | null;
 }
 
 type SimpleNotificationTypes = 'follow' | 'follow_request' | 'admin.sign_up';
@@ -97,8 +127,7 @@ export interface ApiAccountWarningJSON {
   appeal: unknown;
 }
 
-interface ModerationWarningNotificationGroupJSON
-  extends BaseNotificationGroupJSON {
+interface ModerationWarningNotificationGroupJSON extends BaseNotificationGroupJSON {
   type: 'moderation_warning';
   moderation_warning: ApiAccountWarningJSON;
 }
@@ -118,16 +147,23 @@ export interface ApiAccountRelationshipSeveranceEventJSON {
   created_at: string;
 }
 
-interface AccountRelationshipSeveranceNotificationGroupJSON
-  extends BaseNotificationGroupJSON {
+interface AccountRelationshipSeveranceNotificationGroupJSON extends BaseNotificationGroupJSON {
   type: 'severed_relationships';
   event: ApiAccountRelationshipSeveranceEventJSON;
 }
 
-interface AccountRelationshipSeveranceNotificationJSON
-  extends BaseNotificationJSON {
+interface AccountRelationshipSeveranceNotificationJSON extends BaseNotificationJSON {
   type: 'severed_relationships';
   event: ApiAccountRelationshipSeveranceEventJSON;
+}
+
+export interface ApiAnnualReportEventJSON {
+  year: string;
+}
+
+interface AnnualReportNotificationGroupJSON extends BaseNotificationGroupJSON {
+  type: 'annual_report';
+  annual_report: ApiAnnualReportEventJSON;
 }
 
 export type ApiNotificationJSON =
@@ -135,11 +171,31 @@ export type ApiNotificationJSON =
   | ReportNotificationJSON
   | AccountRelationshipSeveranceNotificationJSON
   | NotificationWithStatusJSON
-  | ModerationWarningNotificationJSON;
+  | ModerationWarningNotificationJSON
+  | AddedToCollectionNotificationJSON
+  | CollectionUpdateNotificationJSON;
 
 export type ApiNotificationGroupJSON =
   | SimpleNotificationGroupJSON
   | ReportNotificationGroupJSON
   | AccountRelationshipSeveranceNotificationGroupJSON
   | NotificationGroupWithStatusJSON
-  | ModerationWarningNotificationGroupJSON;
+  | ModerationWarningNotificationGroupJSON
+  | AnnualReportNotificationGroupJSON
+  | AddedToCollectionNotificationGroupJSON
+  | CollectionUpdateNotificationGroupJSON;
+
+export interface ApiNotificationGroupsResultJSON {
+  accounts: ApiAccountJSON[];
+  statuses: ApiStatusJSON[];
+  notification_groups: ApiNotificationGroupJSON[];
+}
+
+export interface ApiNotificationRequestJSON {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  notifications_count: string;
+  account: ApiAccountJSON;
+  last_status?: ApiStatusJSON;
+}

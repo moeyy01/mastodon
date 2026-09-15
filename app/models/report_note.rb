@@ -6,10 +6,10 @@
 #
 #  id         :bigint(8)        not null, primary key
 #  content    :text             not null
-#  report_id  :bigint(8)        not null
-#  account_id :bigint(8)        not null
 #  created_at :datetime         not null
 #  updated_at :datetime         not null
+#  account_id :bigint(8)        not null
+#  report_id  :bigint(8)        not null
 #
 
 class ReportNote < ApplicationRecord
@@ -18,7 +18,7 @@ class ReportNote < ApplicationRecord
   belongs_to :account
   belongs_to :report, inverse_of: :notes, touch: true
 
-  scope :latest, -> { reorder(created_at: :desc) }
+  scope :chronological, -> { reorder(id: :asc) }
 
   validates :content, presence: true, length: { maximum: CONTENT_SIZE_LIMIT }
 end

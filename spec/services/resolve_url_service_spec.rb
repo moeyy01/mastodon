@@ -2,7 +2,7 @@
 
 require 'rails_helper'
 
-describe ResolveURLService do
+RSpec.describe ResolveURLService do
   subject { described_class.new }
 
   describe '#call' do
@@ -30,6 +30,49 @@ describe ResolveURLService do
       expect(subject.call(url)).to eq known_account
     end
 
+    context 'when searching for a remote collection' do
+      let(:account) { Fabricate(:account) }
+      let(:collection_account) { Fabricate(:account, domain: 'example.com', protocol: :activitypub) }
+
+      let(:uri) { 'https://example.com/featured_collections/1' }
+
+      let(:payload) do
+        {
+          '@context' => 'https://www.w3.org/ns/activitystreams',
+          'id' => uri,
+          'type' => 'FeaturedCollection',
+          'name' => 'Incredible people',
+          'summary' => 'These are really amazing',
+          'attributedTo' => collection_account.uri,
+          'sensitive' => false,
+          'discoverable' => true,
+          'totalItems' => 0,
+        }
+      end
+
+      before do
+        stub_request(:get, uri).to_return(status: 200, body: payload.to_json, headers: { 'Content-Type': 'application/activity+json' })
+      end
+
+      it 'returns the collection' do
+        expect(subject.call(uri, on_behalf_of: account))
+          .to be_a(Collection)
+          .and have_attributes(
+            uri: uri
+          )
+      end
+    end
+
+    context 'when searching for a local collection' do
+      let(:account) { Fabricate(:account) }
+      let(:collection) { Fabricate(:collection) }
+
+      it 'returns the collection' do
+        expect(subject.call(ActivityPub::TagManager.instance.uri_for(collection), on_behalf_of: account))
+          .to eq(collection)
+      end
+    end
+
     context 'when searching for a remote private status' do
       let(:account)  { Fabricate(:account) }
       let(:poster)   { Fabricate(:account, domain: 'example.com') }
@@ -51,12 +94,11 @@ describe ResolveURLService do
           let(:url) { 'https://example.com/@foo/42' }
           let(:uri) { 'https://example.com/users/foo/statuses/42' }
 
-          it 'returns status by url' do
-            expect(subject.call(url, on_behalf_of: account)).to eq(status)
-          end
-
-          it 'returns status by uri' do
-            expect(subject.call(uri, on_behalf_of: account)).to eq(status)
+          it 'returns status by URL or URI' do
+            expect(subject.call(url, on_behalf_of: account))
+              .to eq(status)
+            expect(subject.call(uri, on_behalf_of: account))
+              .to eq(status)
           end
         end
 
@@ -75,12 +117,11 @@ describe ResolveURLService do
           let(:url) { 'https://example.com/@foo/42' }
           let(:uri) { 'https://example.com/users/foo/statuses/42' }
 
-          it 'does not return the status by url' do
-            expect(subject.call(url, on_behalf_of: account)).to be_nil
-          end
-
-          it 'does not return the status by uri' do
-            expect(subject.call(uri, on_behalf_of: account)).to be_nil
+          it 'does not return the status by URL or URI' do
+            expect(subject.call(url, on_behalf_of: account))
+              .to be_nil
+            expect(subject.call(uri, on_behalf_of: account))
+              .to be_nil
           end
         end
 
@@ -107,22 +148,20 @@ describe ResolveURLService do
           account.follow!(poster)
         end
 
-        it 'returns status by url' do
-          expect(subject.call(url, on_behalf_of: account)).to eq(status)
-        end
-
-        it 'returns status by uri' do
-          expect(subject.call(uri, on_behalf_of: account)).to eq(status)
+        it 'returns status by URL or URI' do
+          expect(subject.call(url, on_behalf_of: account))
+            .to eq(status)
+          expect(subject.call(uri, on_behalf_of: account))
+            .to eq(status)
         end
       end
 
       context 'when the account does not follow the poster' do
-        it 'does not return the status by url' do
-          expect(subject.call(url, on_behalf_of: account)).to be_nil
-        end
-
-        it 'does not return the status by uri' do
-          expect(subject.call(uri, on_behalf_of: account)).to be_nil
+        it 'does not return the status by URL or URI' do
+          expect(subject.call(url, on_behalf_of: account))
+            .to be_nil
+          expect(subject.call(uri, on_behalf_of: account))
+            .to be_nil
         end
       end
     end

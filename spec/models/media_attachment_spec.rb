@@ -149,13 +149,13 @@ RSpec.describe MediaAttachment, :attachment_processing do
     it_behaves_like 'static 600x400 image', 'image/webp', '.webp'
   end
 
-  describe 'avif' do
+  describe 'avif', skip: 'HEIF temporarily disabled' do
     let(:media) { Fabricate(:media_attachment, file: attachment_fixture('600x400.avif')) }
 
     it_behaves_like 'static 600x400 image', 'image/jpeg', '.jpeg'
   end
 
-  describe 'heic' do
+  describe 'heic', skip: 'HEIF temporarily disabled' do
     let(:media) { Fabricate(:media_attachment, file: attachment_fixture('600x400.heic')) }
 
     it_behaves_like 'static 600x400 image', 'image/jpeg', '.jpeg'
@@ -219,9 +219,7 @@ RSpec.describe MediaAttachment, :attachment_processing do
   describe 'ogg with cover art' do
     let(:media) { Fabricate(:media_attachment, file: attachment_fixture('boop.ogg')) }
     let(:expected_media_duration) { 0.235102 }
-
-    # The libvips and ImageMagick implementations produce different results
-    let(:expected_background_color) { Rails.configuration.x.use_vips ? '#268cd9' : '#3088d4' }
+    let(:expected_background_color) { '#268cd9' }
 
     it 'sets correct file metadata' do
       expect(media)
@@ -257,12 +255,7 @@ RSpec.describe MediaAttachment, :attachment_processing do
     end
   end
 
-  it 'is invalid without file' do
-    media = described_class.new
-
-    expect(media.valid?).to be false
-    expect(media).to model_have_error_on_field(:file)
-  end
+  it { is_expected.to validate_presence_of(:file) }
 
   describe 'size limit validation' do
     it 'rejects video files that are too large' do
@@ -290,6 +283,38 @@ RSpec.describe MediaAttachment, :attachment_processing do
       media = Fabricate(:media_attachment, file: attachment_fixture('attachment.jpg'))
       expect(media.valid?).to be true
     end
+  end
+
+  describe 'cache deletion hooks' do
+    let(:media) { Fabricate(:media_attachment) }
+
+    before do
+      allow(Rails.configuration.x.cache_buster).to receive(:enabled).and_return(true)
+    end
+
+    it 'queues CacheBusterWorker jobs' do
+      original_url = media.file.url(:original)
+      small_url = media.file.url(:small)
+
+      expect { media.destroy }
+        .to enqueue_sidekiq_job(CacheBusterWorker).with(original_url)
+        .and enqueue_sidekiq_job(CacheBusterWorker).with(small_url)
+    end
+
+    context 'with a missing remote attachment' do
+      let(:media) { Fabricate(:media_attachment, remote_url: 'https://example.com/foo.png', file: nil) }
+
+      it 'does not queue CacheBusterWorker jobs' do
+        expect { media.destroy }
+          .to_not enqueue_sidekiq_job(CacheBusterWorker)
+      end
+    end
+  end
+
+  describe '.combined_media_file_size' do
+    subject { described_class.combined_media_file_size }
+
+    it { is_expected.to be_an(Arel::Nodes::Grouping) }
   end
 
   private

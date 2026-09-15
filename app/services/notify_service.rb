@@ -3,118 +3,39 @@
 class NotifyService < BaseService
   include Redisable
 
-  MAXIMUM_GROUP_SPAN_HOURS = 12
-
+  # TODO: the severed_relationships and annual_report types probably warrants email notifications
   NON_EMAIL_TYPES = %i(
     admin.report
     admin.sign_up
     update
+    quoted_update
     poll
     status
     moderation_warning
-    # TODO: this probably warrants an email notification
     severed_relationships
+    annual_report
+    added_to_collection
+    collection_update
   ).freeze
 
-  class DismissCondition
-    def initialize(notification)
-      @recipient = notification.account
-      @sender = notification.from_account
-      @notification = notification
-    end
-
-    def dismiss?
-      blocked   = @recipient.unavailable?
-      blocked ||= from_self? && %i(poll severed_relationships moderation_warning).exclude?(@notification.type)
-
-      return blocked if message? && from_staff?
-
-      blocked ||= domain_blocking?
-      blocked ||= @recipient.blocking?(@sender)
-      blocked ||= @recipient.muting_notifications?(@sender)
-      blocked ||= conversation_muted?
-      blocked ||= blocked_mention? if message?
-      blocked
-    end
-
-    private
-
-    def blocked_mention?
-      FeedManager.instance.filter?(:mentions, @notification.target_status, @recipient)
-    end
-
-    def message?
-      @notification.type == :mention
-    end
-
-    def from_staff?
-      @sender.local? && @sender.user.present? && @sender.user_role&.overrides?(@recipient.user_role)
-    end
-
-    def from_self?
-      @recipient.id == @sender.id
-    end
-
-    def domain_blocking?
-      @recipient.domain_blocking?(@sender.domain) && !following_sender?
-    end
-
-    def conversation_muted?
-      @notification.target_status && @recipient.muting_conversation?(@notification.target_status.conversation)
-    end
-
-    def following_sender?
-      @recipient.following?(@sender)
-    end
-  end
-
-  class FilterCondition
+  class BaseCondition
     NEW_ACCOUNT_THRESHOLD = 30.days.freeze
 
     NEW_FOLLOWER_THRESHOLD = 3.days.freeze
 
-    NON_FILTERABLE_TYPES = %i(
-      admin.sign_up
-      admin.report
-      poll
-      update
-      account_warning
-    ).freeze
-
-    def initialize(notification)
-      @notification = notification
+    def initialize(notification, **options)
       @recipient = notification.account
       @sender = notification.from_account
+      @notification = notification
       @policy = NotificationPolicy.find_or_initialize_by(account: @recipient)
-    end
-
-    def filter?
-      return false unless Notification::PROPERTIES[@notification.type][:filterable]
-      return false if override_for_sender?
-
-      from_limited? ||
-        filtered_by_not_following_policy? ||
-        filtered_by_not_followers_policy? ||
-        filtered_by_new_accounts_policy? ||
-        filtered_by_private_mentions_policy?
+      @from_staff = @sender.local? && @sender.user.present? && @sender.user_role&.bypass_block?(@recipient.user_role)
+      @options = options
     end
 
     private
 
-    def filtered_by_not_following_policy?
-      @policy.filter_not_following? && not_following?
-    end
-
-    def filtered_by_not_followers_policy?
-      @policy.filter_not_followers? && not_follower?
-    end
-
-    def filtered_by_new_accounts_policy?
-      @policy.filter_new_accounts? && new_account?
-    end
-
-    def filtered_by_private_mentions_policy?
-      @policy.filter_private_mentions? && not_following? && private_mention_not_in_response?
+    def filterable_type?
+      Notification::PROPERTIES[@notification.type][:filterable]
     end
 
     def not_following?
@@ -134,8 +55,12 @@ class NotifyService < BaseService
       NotificationPermission.exists?(account: @recipient, from_account: @sender)
     end
 
-    def from_limited?
-      @sender.silenced? && not_following?
+    def message?
+      @notification.type == :mention
+    end
+
+    def from_staff?
+      @from_staff
     end
 
     def private_mention_not_in_response?
@@ -152,7 +77,7 @@ class NotifyService < BaseService
       # This queries private mentions from the recipient to the sender up in the thread.
       # This allows up to 100 messages that do not match in the thread, allowing conversations
       # involving multiple people.
-      Status.count_by_sql([<<-SQL.squish, id: @notification.target_status.in_reply_to_id, recipient_id: @recipient.id, sender_id: @sender.id, depth_limit: 100])
+      Status.count_by_sql([<<~SQL.squish, id: @notification.target_status.in_reply_to_id, recipient_id: @recipient.id, sender_id: @sender.id, depth_limit: 100])
         WITH RECURSIVE ancestors(id, in_reply_to_id, mention_id, path, depth) AS (
             SELECT s.id, s.in_reply_to_id, m.id, ARRAY[s.id], 0
             FROM statuses s
@@ -172,20 +97,134 @@ class NotifyService < BaseService
         WHERE ancestors.mention_id IS NOT NULL AND s.account_id = :recipient_id AND s.visibility = 3
       SQL
     end
+
+    def from_bot?
+      @sender.bot?
+    end
   end
 
-  def call(recipient, type, activity)
+  class DropCondition < BaseCondition
+    def drop?
+      blocked   = @recipient.unavailable?
+      blocked ||= from_self? && %i(poll severed_relationships moderation_warning annual_report).exclude?(@notification.type)
+
+      return blocked if message? && from_staff?
+
+      blocked ||= domain_blocking?
+      blocked ||= @recipient.blocking?(@sender)
+      blocked ||= @recipient.muting_notifications?(@sender)
+      blocked ||= conversation_muted?
+      blocked ||= blocked_mention? if message?
+
+      return true if blocked
+      return false unless filterable_type?
+      return false if override_for_sender?
+
+      blocked_by_limited_accounts_policy? ||
+        blocked_by_not_following_policy? ||
+        blocked_by_not_followers_policy? ||
+        blocked_by_new_accounts_policy? ||
+        blocked_by_private_mentions_policy? ||
+        blocked_by_bots_policy?
+    end
+
+    private
+
+    def blocked_mention?
+      FeedManager.instance.filter?(:mentions, @notification.target_status, @recipient)
+    end
+
+    def from_self?
+      @recipient.id == @sender.id
+    end
+
+    def domain_blocking?
+      @recipient.domain_blocking?(@sender.domain) && not_following?
+    end
+
+    def conversation_muted?
+      @notification.target_status && @recipient.muting_conversation?(@notification.target_status.conversation)
+    end
+
+    def blocked_by_not_following_policy?
+      @policy.drop_not_following? && not_following?
+    end
+
+    def blocked_by_not_followers_policy?
+      @policy.drop_not_followers? && not_follower?
+    end
+
+    def blocked_by_new_accounts_policy?
+      @policy.drop_new_accounts? && new_account? && not_following?
+    end
+
+    def blocked_by_private_mentions_policy?
+      @policy.drop_private_mentions? && not_following? && private_mention_not_in_response?
+    end
+
+    def blocked_by_limited_accounts_policy?
+      @policy.drop_limited_accounts? && (@options[:silenced] || @sender.silenced?) && not_following?
+    end
+
+    def blocked_by_bots_policy?
+      @policy.drop_bots? && from_bot? && not_following?
+    end
+  end
+
+  class FilterCondition < BaseCondition
+    def filter?
+      return false unless filterable_type?
+      return false if override_for_sender?
+      return false if message? && from_staff?
+
+      filtered_by_limited_accounts_policy? ||
+        filtered_by_not_following_policy? ||
+        filtered_by_not_followers_policy? ||
+        filtered_by_new_accounts_policy? ||
+        filtered_by_private_mentions_policy? ||
+        filtered_by_bots_policy?
+    end
+
+    private
+
+    def filtered_by_not_following_policy?
+      @policy.filter_not_following? && not_following?
+    end
+
+    def filtered_by_not_followers_policy?
+      @policy.filter_not_followers? && not_follower?
+    end
+
+    def filtered_by_new_accounts_policy?
+      @policy.filter_new_accounts? && new_account? && not_following?
+    end
+
+    def filtered_by_private_mentions_policy?
+      @policy.filter_private_mentions? && not_following? && private_mention_not_in_response?
+    end
+
+    def filtered_by_limited_accounts_policy?
+      @policy.filter_limited_accounts? && (@options[:silenced] || @sender.silenced?) && not_following?
+    end
+
+    def filtered_by_bots_policy?
+      @policy.filter_bots? && from_bot? && not_following?
+    end
+  end
+
+  def call(recipient, type, activity, **options)
     return if recipient.user.nil?
 
+    @options      = options
     @recipient    = recipient
     @activity     = activity
     @notification = Notification.new(account: @recipient, type: type, activity: @activity)
 
     # For certain conditions we don't need to create a notification at all
-    return if dismiss?
+    return if drop?
 
     @notification.filtered = filter?
-    @notification.group_key = notification_group_key
+    @notification.set_group_key!
     @notification.save!
 
     # It's possible the underlying activity has been deleted
@@ -205,33 +244,16 @@ class NotifyService < BaseService
 
   private
 
-  def notification_group_key
-    return nil if @notification.filtered || %i(favourite reblog).exclude?(@notification.type)
-
-    type_prefix = "#{@notification.type}-#{@notification.target_status.id}"
-    redis_key   = "notif-group/#{@recipient.id}/#{type_prefix}"
-    hour_bucket = @notification.activity.created_at.utc.to_i / 1.hour.to_i
-
-    # Reuse previous group if it does not span too large an amount of time
-    previous_bucket = redis.get(redis_key).to_i
-    hour_bucket = previous_bucket if hour_bucket < previous_bucket + MAXIMUM_GROUP_SPAN_HOURS
-
-    # We do not concern ourselves with race conditions since we use hour buckets
-    redis.set(redis_key, hour_bucket, ex: MAXIMUM_GROUP_SPAN_HOURS.hours.to_i)
-
-    "#{type_prefix}-#{hour_bucket}"
-  end
-
-  def dismiss?
-    DismissCondition.new(@notification).dismiss?
+  def drop?
+    DropCondition.new(@notification, silenced: @options[:silenced]).drop?
   end
 
   def filter?
-    FilterCondition.new(@notification).filter?
+    FilterCondition.new(@notification, silenced: @options[:silenced]).filter?
   end
 
   def update_notification_request!
-    return unless @notification.type == :mention
+    return unless %i(mention quote).include?(@notification.type)
 
     notification_request = NotificationRequest.find_or_initialize_by(account_id: @recipient.id, from_account_id: @notification.from_account_id)
     notification_request.last_status_id = @notification.target_status.id
@@ -244,7 +266,7 @@ class NotifyService < BaseService
   end
 
   def push_to_streaming_api!
-    redis.publish("timeline:#{@recipient.id}:notifications", Oj.dump(event: :notification, payload: InlineRenderer.render(@notification, @recipient, :notification)))
+    redis.publish("timeline:#{@recipient.id}:notifications", { event: :notification, payload: InlineRenderer.render(@notification, @recipient, :notification) }.to_json)
   end
 
   def subscribed_to_streaming_api?

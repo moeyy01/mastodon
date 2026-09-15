@@ -2,14 +2,12 @@
 
 require 'rails_helper'
 
-describe AccountRefreshWorker do
+RSpec.describe AccountRefreshWorker do
   let(:worker) { described_class.new }
   let(:service) { instance_double(ResolveAccountService, call: true) }
 
   describe '#perform' do
-    before do
-      allow(ResolveAccountService).to receive(:new).and_return(service)
-    end
+    before { stub_service }
 
     context 'when account does not exist' do
       it 'returns immediately without processing' do
@@ -21,7 +19,7 @@ describe AccountRefreshWorker do
 
     context 'when account exists' do
       context 'when account does not need refreshing' do
-        let(:account) { Fabricate(:account, last_webfingered_at: recent_webfinger_at) }
+        let(:account) { Fabricate(:remote_account, last_webfingered_at: recent_webfinger_at) }
 
         it 'returns immediately without processing' do
           worker.perform(account.id)
@@ -31,9 +29,9 @@ describe AccountRefreshWorker do
       end
 
       context 'when account needs refreshing' do
-        let(:account) { Fabricate(:account, last_webfingered_at: outdated_webfinger_at) }
+        let(:account) { Fabricate(:remote_account, last_webfingered_at: outdated_webfinger_at) }
 
-        it 'schedules an account update' do
+        it 'performs an account update' do
           worker.perform(account.id)
 
           expect(service).to have_received(:call)
@@ -47,6 +45,12 @@ describe AccountRefreshWorker do
       def outdated_webfinger_at
         (Account::BACKGROUND_REFRESH_INTERVAL + 3.days).ago
       end
+    end
+
+    def stub_service
+      allow(ResolveAccountService)
+        .to receive(:new)
+        .and_return(service)
     end
   end
 end

@@ -2,11 +2,9 @@
 
 require 'rails_helper'
 
-describe 'Admin Measures' do
-  let(:user)    { Fabricate(:user, role: UserRole.find_by(name: 'Admin')) }
-  let(:token)   { Fabricate(:accessible_access_token, resource_owner_id: user.id, scopes: scopes) }
-  let(:headers) { { 'Authorization' => "Bearer #{token.token}" } }
-  let(:account) { Fabricate(:account) }
+RSpec.describe 'Admin Measures' do
+  include_context 'with API authentication', user_fabricator: :admin_user
+
   let(:params) do
     {
       keys: %w(instance_accounts instance_follows instance_followers),
@@ -22,6 +20,8 @@ describe 'Admin Measures' do
         domain: 'mastodon.social',
         include_subdomains: true,
       },
+      start_at: '2026-01-01',
+      end_at: '2026-07-01',
     }
   end
 
@@ -32,6 +32,8 @@ describe 'Admin Measures' do
 
         expect(response)
           .to have_http_status(403)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
 
@@ -43,9 +45,25 @@ describe 'Admin Measures' do
 
         expect(response)
           .to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
 
-        expect(body_as_json)
+        expect(response.parsed_body)
           .to be_an(Array)
+      end
+
+      context 'without start_at and end_at' do
+        it 'returns http success and status json' do
+          post '/api/v1/admin/measures', params: params.merge({ start_at: nil, end_at: nil }), headers: headers
+
+          expect(response)
+            .to have_http_status(200)
+          expect(response.content_type)
+            .to start_with('application/json')
+
+          expect(response.parsed_body)
+            .to be_an(Array)
+        end
       end
     end
   end

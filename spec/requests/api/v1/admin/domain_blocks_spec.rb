@@ -3,11 +3,7 @@
 require 'rails_helper'
 
 RSpec.describe 'Domain Blocks' do
-  let(:role)    { UserRole.find_by(name: 'Admin') }
-  let(:user)    { Fabricate(:user, role: role) }
-  let(:scopes)  { 'admin:read:domain_blocks admin:write:domain_blocks' }
-  let(:token)   { Fabricate(:accessible_access_token, resource_owner_id: user.id, scopes: scopes) }
-  let(:headers) { { 'Authorization' => "Bearer #{token.token}" } }
+  include_context 'with API authentication', user_fabricator: :admin_user, oauth_scopes: 'admin:read:domain_blocks admin:write:domain_blocks'
 
   describe 'GET /api/v1/admin/domain_blocks' do
     subject do
@@ -19,18 +15,18 @@ RSpec.describe 'Domain Blocks' do
     it_behaves_like 'forbidden for wrong scope', 'write:statuses'
     it_behaves_like 'forbidden for wrong role', ''
     it_behaves_like 'forbidden for wrong role', 'Moderator'
-
-    it 'returns http success' do
-      subject
-
-      expect(response).to have_http_status(200)
-    end
+    it_behaves_like 'forbidden for disabled user'
 
     context 'when there are no domain blocks' do
       it 'returns an empty list' do
         subject
 
-        expect(body_as_json).to be_empty
+        expect(response)
+          .to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body)
+          .to be_empty
       end
     end
 
@@ -64,7 +60,12 @@ RSpec.describe 'Domain Blocks' do
       it 'returns the expected domain blocks' do
         subject
 
-        expect(body_as_json).to match_array(expected_responde)
+        expect(response)
+          .to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body)
+          .to match_array(expected_responde)
       end
 
       context 'with limit param' do
@@ -73,7 +74,7 @@ RSpec.describe 'Domain Blocks' do
         it 'returns only the requested number of domain blocks' do
           subject
 
-          expect(body_as_json.size).to eq(params[:limit])
+          expect(response.parsed_body.size).to eq(params[:limit])
         end
       end
     end
@@ -89,24 +90,25 @@ RSpec.describe 'Domain Blocks' do
     it_behaves_like 'forbidden for wrong scope', 'write:statuses'
     it_behaves_like 'forbidden for wrong role', ''
     it_behaves_like 'forbidden for wrong role', 'Moderator'
+    it_behaves_like 'forbidden for disabled user'
 
     it 'returns the expected domain block content', :aggregate_failures do
       subject
 
       expect(response).to have_http_status(200)
-      expect(body_as_json).to eq(
-        {
-          id: domain_block.id.to_s,
-          domain: domain_block.domain,
-          digest: domain_block.domain_digest,
-          created_at: domain_block.created_at.strftime('%Y-%m-%dT%H:%M:%S.%LZ'),
-          severity: domain_block.severity.to_s,
-          reject_media: domain_block.reject_media,
-          reject_reports: domain_block.reject_reports,
-          private_comment: domain_block.private_comment,
-          public_comment: domain_block.public_comment,
-          obfuscate: domain_block.obfuscate,
-        }
+      expect(response.content_type)
+        .to start_with('application/json')
+      expect(response.parsed_body).to match(
+        id: domain_block.id.to_s,
+        domain: domain_block.domain,
+        digest: domain_block.domain_digest,
+        created_at: domain_block.created_at.strftime('%Y-%m-%dT%H:%M:%S.%LZ'),
+        severity: domain_block.severity.to_s,
+        reject_media: domain_block.reject_media,
+        reject_reports: domain_block.reject_reports,
+        private_comment: domain_block.private_comment,
+        public_comment: domain_block.public_comment,
+        obfuscate: domain_block.obfuscate
       )
     end
 
@@ -115,6 +117,8 @@ RSpec.describe 'Domain Blocks' do
         get '/api/v1/admin/domain_blocks/-1', headers: headers
 
         expect(response).to have_http_status(404)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
   end
@@ -129,14 +133,15 @@ RSpec.describe 'Domain Blocks' do
     it_behaves_like 'forbidden for wrong scope', 'write:statuses'
     it_behaves_like 'forbidden for wrong role', ''
     it_behaves_like 'forbidden for wrong role', 'Moderator'
+    it_behaves_like 'forbidden for disabled user'
 
     it 'creates a domain block with the expected domain name and severity', :aggregate_failures do
       subject
 
-      body = body_as_json
-
       expect(response).to have_http_status(200)
-      expect(body).to match a_hash_including(
+      expect(response.content_type)
+        .to start_with('application/json')
+      expect(response.parsed_body).to match a_hash_including(
         {
           domain: 'foo.bar.com',
           severity: 'silence',
@@ -156,10 +161,10 @@ RSpec.describe 'Domain Blocks' do
       it 'creates a domain block with the expected domain name and severity', :aggregate_failures do
         subject
 
-        body = body_as_json
-
         expect(response).to have_http_status(200)
-        expect(body).to match a_hash_including(
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body).to match a_hash_including(
           {
             domain: 'foo.bar.com',
             severity: 'suspend',
@@ -179,7 +184,9 @@ RSpec.describe 'Domain Blocks' do
         subject
 
         expect(response).to have_http_status(422)
-        expect(body_as_json[:existing_domain_block][:domain]).to eq('foo.bar.com')
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body[:existing_domain_block][:domain]).to eq('foo.bar.com')
       end
     end
 
@@ -192,7 +199,9 @@ RSpec.describe 'Domain Blocks' do
         subject
 
         expect(response).to have_http_status(422)
-        expect(body_as_json[:existing_domain_block][:domain]).to eq('bar.com')
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body[:existing_domain_block][:domain]).to eq('bar.com')
       end
     end
 
@@ -203,6 +212,21 @@ RSpec.describe 'Domain Blocks' do
         subject
 
         expect(response).to have_http_status(422)
+        expect(response.content_type)
+          .to start_with('application/json')
+      end
+    end
+
+    context 'when severity is invalid' do
+      let(:params) { { domain: 'bar.com', severity: :bar } }
+
+      it 'returns http unprocessable entity' do
+        subject
+
+        expect(response).to have_http_status(422)
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body[:error]).to eq('Validation failed: Severity is not included in the list')
       end
     end
   end
@@ -218,12 +242,15 @@ RSpec.describe 'Domain Blocks' do
     it_behaves_like 'forbidden for wrong scope', 'write:statuses'
     it_behaves_like 'forbidden for wrong role', ''
     it_behaves_like 'forbidden for wrong role', 'Moderator'
+    it_behaves_like 'forbidden for disabled user'
 
     it 'returns the updated domain block', :aggregate_failures do
       subject
 
       expect(response).to have_http_status(200)
-      expect(body_as_json).to match a_hash_including(
+      expect(response.content_type)
+        .to start_with('application/json')
+      expect(response.parsed_body).to match a_hash_including(
         {
           id: domain_block.id.to_s,
           domain: domain_block.domain,
@@ -242,6 +269,8 @@ RSpec.describe 'Domain Blocks' do
         put '/api/v1/admin/domain_blocks/-1', headers: headers
 
         expect(response).to have_http_status(404)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
   end
@@ -256,11 +285,14 @@ RSpec.describe 'Domain Blocks' do
     it_behaves_like 'forbidden for wrong scope', 'write:statuses'
     it_behaves_like 'forbidden for wrong role', ''
     it_behaves_like 'forbidden for wrong role', 'Moderator'
+    it_behaves_like 'forbidden for disabled user'
 
     it 'deletes the domain block', :aggregate_failures do
       subject
 
       expect(response).to have_http_status(200)
+      expect(response.content_type)
+        .to start_with('application/json')
       expect(DomainBlock.find_by(id: domain_block.id)).to be_nil
     end
 
@@ -269,6 +301,8 @@ RSpec.describe 'Domain Blocks' do
         delete '/api/v1/admin/domain_blocks/-1', headers: headers
 
         expect(response).to have_http_status(404)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
   end

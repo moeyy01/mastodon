@@ -18,6 +18,7 @@ import { closeModal } from 'mastodon/actions/modal';
 import { Button } from 'mastodon/components/button';
 import { CheckBox } from 'mastodon/components/check_box';
 import { Icon } from 'mastodon/components/icon';
+import { NavigationFocusTarget } from 'mastodon/components/navigation_focus_target';
 import { RadioButton } from 'mastodon/components/radio_button';
 
 const messages = defineMessages({
@@ -84,38 +85,41 @@ export const MuteModal = ({ accountId, acct }) => {
           </div>
 
           <div>
-            <h1><FormattedMessage id='mute_modal.title' defaultMessage='Mute user?' /></h1>
-            <div>@{acct}</div>
+            <NavigationFocusTarget as='h1'>
+              <FormattedMessage id='mute_modal.title' defaultMessage='Mute user?' />
+            </NavigationFocusTarget>
+            <p>@{acct}</p>
           </div>
         </div>
 
-        <div className='safety-action-modal__bullet-points'>
-          <div>
+        <ul className='safety-action-modal__bullet-points'>
+          <li>
             <div className='safety-action-modal__bullet-points__icon'><Icon icon={CampaignIcon} /></div>
             <div><FormattedMessage id='mute_modal.they_wont_know' defaultMessage="They won't know they've been muted." /></div>
-          </div>
+          </li>
 
-          <div>
+          <li>
             <div className='safety-action-modal__bullet-points__icon'><Icon icon={VisibilityOffIcon} /></div>
             <div><FormattedMessage id='mute_modal.you_wont_see_posts' defaultMessage="They can still see your posts, but you won't see theirs." /></div>
-          </div>
+          </li>
 
-          <div>
+          <li>
             <div className='safety-action-modal__bullet-points__icon'><Icon icon={AlternateEmailIcon} /></div>
             <div><FormattedMessage id='mute_modal.you_wont_see_mentions' defaultMessage="You won't see posts that mention them." /></div>
-          </div>
+          </li>
 
-          <div>
+          <li>
             <div className='safety-action-modal__bullet-points__icon'><Icon icon={ReplyIcon} /></div>
             <div><FormattedMessage id='mute_modal.they_can_mention_and_follow' defaultMessage="They can mention and follow you, but you won't see them." /></div>
-          </div>
-        </div>
+          </li>
+        </ul>
       </div>
 
       <div className={classNames('safety-action-modal__bottom', { active: expanded })}>
         <div className='safety-action-modal__bottom__collapsible'>
           <div className='safety-action-modal__field-group'>
             <RadioButtonLabel name='duration' value='0' label={intl.formatMessage(messages.indefinite)} currentValue={muteDuration} onChange={handleChangeMuteDuration} />
+            <RadioButtonLabel name='duration' value='21600' label={intl.formatMessage(messages.hours, { number: 6 })} currentValue={muteDuration} onChange={handleChangeMuteDuration} />
             <RadioButtonLabel name='duration' value='86400' label={intl.formatMessage(messages.hours, { number: 24 })} currentValue={muteDuration} onChange={handleChangeMuteDuration} />
             <RadioButtonLabel name='duration' value='604800' label={intl.formatMessage(messages.days, { number: 7 })} currentValue={muteDuration} onChange={handleChangeMuteDuration} />
             <RadioButtonLabel name='duration' value='2592000' label={intl.formatMessage(messages.days, { number: 30 })} currentValue={muteDuration} onChange={handleChangeMuteDuration} />
@@ -127,17 +131,17 @@ export const MuteModal = ({ accountId, acct }) => {
         </div>
 
         <div className='safety-action-modal__actions'>
-          <button onClick={handleToggleSettings} className='link-button'>
+          <button type='button' onClick={handleToggleSettings} className='link-button'>
             {expanded ? <FormattedMessage id='mute_modal.hide_options' defaultMessage='Hide options' /> : <FormattedMessage id='mute_modal.show_options' defaultMessage='Show options' />}
           </button>
 
           <div className='spacer' />
 
-          <button onClick={handleCancel} className='link-button'>
+          <button type='button' onClick={handleCancel} className='link-button'>
             <FormattedMessage id='confirmation_modal.cancel' defaultMessage='Cancel' />
           </button>
 
-          <Button onClick={handleClick}>
+          <Button onClick={handleClick} autoFocus>
             <FormattedMessage id='confirmations.mute.confirm' defaultMessage='Mute' />
           </Button>
         </div>

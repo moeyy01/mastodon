@@ -1,8 +1,6 @@
 ---
 ry:
   accounts:
-    follow: Пудписати ся
-    following: Пудпискы
     posts:
       few: Публикації
       one: Публикація

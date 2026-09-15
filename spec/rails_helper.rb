@@ -2,36 +2,12 @@
 
 ENV['RAILS_ENV'] ||= 'test'
 
-unless ENV['DISABLE_SIMPLECOV'] == 'true'
-  require 'simplecov'
-
-  SimpleCov.start 'rails' do
-    if ENV['CI']
-      require 'simplecov-lcov'
-      formatter SimpleCov::Formatter::LcovFormatter
-      formatter.config.report_with_single_file = true
-    else
-      formatter SimpleCov::Formatter::HTMLFormatter
-    end
-
-    enable_coverage :branch
-
-    add_filter 'lib/linter'
-
-    add_group 'Libraries', 'lib'
-    add_group 'Policies', 'app/policies'
-    add_group 'Presenters', 'app/presenters'
-    add_group 'Serializers', 'app/serializers'
-    add_group 'Services', 'app/services'
-    add_group 'Validators', 'app/validators'
-  end
-end
-
 # This needs to be defined before Rails is initialized
 STREAMING_PORT = ENV.fetch('TEST_STREAMING_PORT', '4020')
-ENV['STREAMING_API_BASE_URL'] = "http://localhost:#{STREAMING_PORT}"
+STREAMING_HOST = ENV.fetch('TEST_STREAMING_HOST', 'localhost')
+ENV['STREAMING_API_BASE_URL'] = "http://#{STREAMING_HOST}:#{STREAMING_PORT}"
 
-require File.expand_path('../config/environment', __dir__)
+require_relative '../config/environment'
 
 abort('The Rails environment is running in production mode!') if Rails.env.production?
 
@@ -41,17 +17,17 @@ require 'webmock/rspec'
 require 'paperclip/matchers'
 require 'capybara/rspec'
 require 'chewy/rspec'
-require 'email_spec/rspec'
+require 'pundit/rspec'
 require 'test_prof/recipes/rspec/before_all'
 
-Dir[Rails.root.join('spec', 'support', '**', '*.rb')].each { |f| require f }
+Rails.root.glob('spec/support/**/*.rb').each { |f| require f }
 
 ActiveRecord::Migration.maintain_test_schema!
 WebMock.disable_net_connect!(
   allow_localhost: true,
   allow: Chewy.settings[:host]
 )
-Sidekiq.logger = nil
+Sidekiq.default_configuration.logger = nil
 
 DatabaseCleaner.strategy = [:deletion]
 
@@ -106,12 +82,23 @@ RSpec.configure do |config|
   config.include Devise::Test::IntegrationHelpers, type: :request
   config.include ActionMailer::TestHelper
   config.include Paperclip::Shoulda::Matchers
+  config.include ActiveSupport::Testing::NotificationAssertions
   config.include ActiveSupport::Testing::TimeHelpers
   config.include Chewy::Rspec::Helpers
   config.include Redisable
+  config.include DomainHelpers
   config.include ThreadingHelpers
+  config.include SigningKeysHelpers
   config.include SignedRequestHelpers, type: :request
   config.include CommandLineHelpers, type: :cli
+  config.include SystemHelpers, type: :system
+  config.include Shoulda::Matchers::ActiveModel, type: :validator
+  config.include HtmlHeadInspection, type: :request
+
+  # TODO: Remove when Devise fixes https://github.com/heartcombo/devise/issues/5705
+  config.before do
+    Rails.application.reload_routes_unless_loaded
+  end
 
   config.around(:each, use_transactional_tests: false) do |example|
     self.use_transactional_tests = false
@@ -121,9 +108,9 @@ RSpec.configure do |config|
 
   config.around do |example|
     if example.metadata[:inline_jobs] == true
-      Sidekiq::Testing.inline!
+      Sidekiq.testing!(:inline)
     else
-      Sidekiq::Testing.fake!
+      Sidekiq.testing!(:fake)
     end
     example.run
   end
@@ -138,8 +125,22 @@ RSpec.configure do |config|
 
   config.before do |example|
     unless example.metadata[:attachment_processing]
-      allow_any_instance_of(Paperclip::Attachment).to receive(:post_process).and_return(true) # rubocop:disable RSpec/AnyInstance
+      # rubocop:disable RSpec/AnyInstance
+      allow_any_instance_of(Paperclip::Attachment).to receive(:post_process).and_return(true)
+      allow_any_instance_of(Paperclip::MediaTypeSpoofDetector).to receive(:spoofed?).and_return(false)
+      # rubocop:enable RSpec/AnyInstance
     end
+  end
+
+  config.before :each, type: :request do
+    # Use https and configured hostname in request spec requests
+    integration_session.https!
+    host! Rails.configuration.x.local_domain
+  end
+
+  config.before :each, type: :system do
+    # Align with capybara config so that rails helpers called from rspec use matching host
+    host! 'localhost:3000'
   end
 
   config.after do
@@ -176,5 +177,5 @@ def stub_reset_connection_pools
   # TODO: Is there a better way to correctly run specs without stubbing this?
   # (Avoids reset_connection_pools! in test env)
   allow(ActiveRecord::Base).to receive(:establish_connection)
-  allow(RedisConfiguration).to receive(:establish_pool)
+  allow(RedisConnection).to receive(:establish_pool)
 end

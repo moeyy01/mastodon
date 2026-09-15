@@ -2,7 +2,7 @@
 
 require 'rails_helper'
 
-describe PublishAnnouncementReactionWorker do
+RSpec.describe PublishAnnouncementReactionWorker do
   let(:worker) { described_class.new }
 
   describe '#perform' do
@@ -17,7 +17,7 @@ describe PublishAnnouncementReactionWorker do
 
       worker.perform(announcement.id, name)
 
-      expect(redis).to have_received(:publish)
+      expect(redis).to have_received(:publish).with(include('timeline'), be_a(String))
     end
 
     it 'does not send the announcement and name to the service when not subscribed' do

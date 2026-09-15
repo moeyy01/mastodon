@@ -6,6 +6,7 @@ class Admin::ActionLogFilter
     account_id
     target_account_id
     target_domain
+    target_tag
   ).freeze
 
   INSTANCE_TARGET_TYPES = %w(
@@ -31,6 +32,7 @@ class Admin::ActionLogFilter
     create_domain_block: { target_type: 'DomainBlock', action: 'create' }.freeze,
     create_email_domain_block: { target_type: 'EmailDomainBlock', action: 'create' }.freeze,
     create_ip_block: { target_type: 'IpBlock', action: 'create' }.freeze,
+    create_relay: { target_type: 'Relay', action: 'create' }.freeze,
     create_unavailable_domain: { target_type: 'UnavailableDomain', action: 'create' }.freeze,
     create_user_role: { target_type: 'UserRole', action: 'create' }.freeze,
     create_canonical_email_block: { target_type: 'CanonicalEmailBlock', action: 'create' }.freeze,
@@ -40,6 +42,7 @@ class Admin::ActionLogFilter
     destroy_domain_allow: { target_type: 'DomainAllow', action: 'destroy' }.freeze,
     destroy_domain_block: { target_type: 'DomainBlock', action: 'destroy' }.freeze,
     destroy_ip_block: { target_type: 'IpBlock', action: 'destroy' }.freeze,
+    destroy_relay: { target_type: 'Relay', action: 'destroy' }.freeze,
     destroy_email_domain_block: { target_type: 'EmailDomainBlock', action: 'destroy' }.freeze,
     destroy_instance: { target_type: 'Instance', action: 'destroy' }.freeze,
     destroy_unavailable_domain: { target_type: 'UnavailableDomain', action: 'destroy' }.freeze,
@@ -49,10 +52,13 @@ class Admin::ActionLogFilter
     disable_2fa_user: { target_type: 'User', action: 'disable_2fa' }.freeze,
     disable_custom_emoji: { target_type: 'CustomEmoji', action: 'disable' }.freeze,
     disable_user: { target_type: 'User', action: 'disable' }.freeze,
+    disable_relay: { target_type: 'Relay', action: 'disable' }.freeze,
     enable_custom_emoji: { target_type: 'CustomEmoji', action: 'enable' }.freeze,
     enable_user: { target_type: 'User', action: 'enable' }.freeze,
+    enable_relay: { target_type: 'Relay', action: 'enable' }.freeze,
     memorialize_account: { target_type: 'Account', action: 'memorialize' }.freeze,
     promote_user: { target_type: 'User', action: 'promote' }.freeze,
+    publish_terms_of_service: { target_type: 'TermsOfService', action: 'publish' }.freeze,
     remove_avatar_user: { target_type: 'User', action: 'remove_avatar' }.freeze,
     reopen_report: { target_type: 'Report', action: 'reopen' }.freeze,
     resend_user: { target_type: 'User', action: 'resend' }.freeze,
@@ -72,7 +78,13 @@ class Admin::ActionLogFilter
     update_user_role: { target_type: 'UserRole', action: 'update' }.freeze,
     update_ip_block: { target_type: 'IpBlock', action: 'update' }.freeze,
     unblock_email_account: { target_type: 'Account', action: 'unblock_email' }.freeze,
+    update_tag: { target_type: 'Tag', action: 'update' }.freeze,
+    create_username_block: { target_type: 'UsernameBlock', action: 'create' }.freeze,
+    update_username_block: { target_type: 'UsernameBlock', action: 'update' }.freeze,
+    destroy_username_block: { target_type: 'UsernameBlock', action: 'destroy' }.freeze,
   }.freeze
+
+  IGNORED_PARAMS = %w(page).freeze
 
   attr_reader :params
 
@@ -84,7 +96,7 @@ class Admin::ActionLogFilter
     scope = latest_action_logs.includes(:target, :account)
 
     params.each do |key, value|
-      next if key.to_s == 'page'
+      next if IGNORED_PARAMS.include?(key.to_s)
 
       scope.merge!(scope_for(key.to_s, value.to_s.strip)) if value.present?
     end
@@ -106,6 +118,8 @@ class Admin::ActionLogFilter
     when 'target_domain'
       normalized_domain = TagManager.instance.normalize_domain(value)
       latest_action_logs.where(human_identifier: normalized_domain, target_type: INSTANCE_TARGET_TYPES)
+    when 'target_tag'
+      latest_action_logs.where(human_identifier: value)
     else
       raise Mastodon::InvalidParameterError, "Unknown filter: #{key}"
     end

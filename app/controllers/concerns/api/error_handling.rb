@@ -20,7 +20,7 @@ module Api::ErrorHandling
       render json: { error: 'Record not found' }, status: 404
     end
 
-    rescue_from HTTP::Error, Mastodon::UnexpectedResponseError do
+    rescue_from(*Mastodon::HTTP_CONNECTION_ERRORS, Mastodon::UnexpectedResponseError) do
       render json: { error: 'Remote data could not be fetched' }, status: 503
     end
 
@@ -45,7 +45,7 @@ module Api::ErrorHandling
       render json: { error: I18n.t('errors.429') }, status: 429
     end
 
-    rescue_from ActionController::ParameterMissing, Mastodon::InvalidParameterError do |e|
+    rescue_from ActionController::ParameterMissing, Mastodon::InvalidParameterError, SearchQueryTransformer::QueryError do |e|
       render json: { error: e.to_s }, status: 400
     end
   end

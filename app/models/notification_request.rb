@@ -5,17 +5,15 @@
 # Table name: notification_requests
 #
 #  id                  :bigint(8)        not null, primary key
-#  account_id          :bigint(8)        not null
-#  from_account_id     :bigint(8)        not null
-#  last_status_id      :bigint(8)
 #  notifications_count :bigint(8)        default(0), not null
 #  created_at          :datetime         not null
 #  updated_at          :datetime         not null
+#  account_id          :bigint(8)        not null
+#  from_account_id     :bigint(8)        not null
+#  last_status_id      :bigint(8)
 #
 
 class NotificationRequest < ApplicationRecord
-  self.ignored_columns += %w(dismissed)
-
   include Paginable
 
   MAX_MEANINGFUL_COUNT = 100
@@ -25,6 +23,8 @@ class NotificationRequest < ApplicationRecord
   belongs_to :last_status, class_name: 'Status'
 
   before_save :prepare_notifications_count
+
+  scope :without_suspended, -> { joins(:from_account).merge(Account.without_suspended) }
 
   def self.preload_cache_collection(requests)
     cached_statuses_by_id = yield(requests.filter_map(&:last_status)).index_by(&:id) # Call cache_collection in block
@@ -47,6 +47,6 @@ class NotificationRequest < ApplicationRecord
   private
 
   def prepare_notifications_count
-    self.notifications_count = Notification.where(account: account, from_account: from_account, filtered: true).limit(MAX_MEANINGFUL_COUNT).count
+    self.notifications_count = Notification.where(account: account, from_account: from_account, type: [:mention, :quote], filtered: true).limit(MAX_MEANINGFUL_COUNT).count
   end
 end

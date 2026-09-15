@@ -20,7 +20,7 @@ class PerOperationWithDeadline < HTTP::Timeout::PerOperation
     @read_deadline = options.fetch(:read_deadline, READ_DEADLINE)
   end
 
-  def connect(socket_class, host, port, nodelay = false)
+  def connect(socket_class, host, port, nodelay = false) # rubocop:disable Style/OptionalBooleanParameter
     @socket = socket_class.open(host, port)
     @socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1) if nodelay
   end
@@ -60,40 +60,66 @@ class PerOperationWithDeadline < HTTP::Timeout::PerOperation
   end
 end
 
-class Request
-  REQUEST_TARGET = '(request-target)'
+# Implement HTTP Signature cavage draft as a HTTP.rb middleware
+class CavageSignatureFeature < HTTP::Feature
+  def initialize(keypair: nil, covered_headers: [])
+    super
 
+    @signing = HttpSignatureDraft.new(keypair.keypair, keypair.full_uri) if keypair.present?
+    @covered_headers = covered_headers
+  end
+
+  def wrap_request(request)
+    signed_headers = request.headers.to_h.slice(*@covered_headers)
+    request.headers['Signature'] = @signing.sign(signed_headers, request.verb, Addressable::URI.parse(request.uri))
+    request
+  end
+
+  # Register this feature with http.rb
+  ::HTTP::Options.register_feature(:http_cavage_signature, self)
+end
+
+class Request
   # We enforce a 5s timeout on DNS resolving, 5s timeout on socket opening
   # and 5s timeout on the TLS handshake, meaning the worst case should take
   # about 15s in total
   TIMEOUT = { connect_timeout: 5, read_timeout: 10, write_timeout: 10, read_deadline: 30 }.freeze
+  SAFE_PRESERVED_CHARS = '+,'
 
   include RoutingHelper
+
+  attr_reader :headers, :signing_keypair
 
   def initialize(verb, url, **options)
     raise ArgumentError if url.blank?
 
     @verb        = verb
-    @url         = Addressable::URI.parse(url).normalize
+    @url         = normalize_preserving_url_encodings(url, SAFE_PRESERVED_CHARS)
     @http_client = options.delete(:http_client)
     @allow_local = options.delete(:allow_local)
-    @full_path   = options.delete(:with_query_string)
-    @options     = options.merge(socket_class: use_proxy? || @allow_local ? ProxySocket : Socket)
-    @options     = @options.merge(timeout_class: PerOperationWithDeadline, timeout_options: TIMEOUT)
+    @options     = {
+      follow: {
+        max_hops: 3,
+      },
+    }.merge(options).merge(
+      socket_class: use_proxy? || @allow_local ? ProxySocket : Socket,
+      timeout_class: PerOperationWithDeadline,
+      timeout_options: TIMEOUT
+    )
     @options     = @options.merge(proxy_url) if use_proxy?
     @headers     = {}
+
+    @signing_keypair = nil
 
     raise Mastodon::HostValidationError, 'Instance does not support hidden service connections' if block_hidden_service?
 
     set_common_headers!
-    set_digest! if options.key?(:body)
   end
 
   def on_behalf_of(actor, sign_with: nil)
     raise ArgumentError, 'actor must not be nil' if actor.nil?
 
-    @actor         = actor
-    @keypair       = sign_with.present? ? OpenSSL::PKey::RSA.new(sign_with) : @actor.keypair
+    @signing_keypair = sign_with.presence || actor.keypair(type: :rsa)
 
     self
   end
@@ -105,27 +131,26 @@ class Request
 
   def perform
     begin
-      response = http_client.request(@verb, @url.to_s, @options.merge(headers: headers))
+      # Try with HTTP Signatures (draft-cavage-http-signatures-12) first
+      response = perform_cavage_signed_request
+
+      # Then if it fails, double-knock using RFC 9421: HTTP Message Signatures
+      if @signing_keypair.present? && [400, 401].include?(response.code)
+        # Consume the body of the first response first
+        response.truncated_body if http_client.persistent? && !response.connection.finished_request?
+
+        response = perform_rfc9421_signed_request
+      end
     rescue => e
       raise e.class, "#{e.message} on #{@url}", e.backtrace[0]
     end
 
     begin
-      # If we are using a persistent connection, we have to
-      # read every response to be able to move forward at all.
-      # However, simply calling #to_s or #flush may not be safe,
-      # as the response body, if malicious, could be too big
-      # for our memory. So we use the #body_with_limit method
-      response.body_with_limit if http_client.persistent?
-
       yield response if block_given?
     ensure
-      http_client.close unless http_client.persistent?
+      response.truncated_body if http_client.persistent? && !response.connection.finished_request?
+      http_client.close unless http_client.persistent? && response.connection.finished_request?
     end
-  end
-
-  def headers
-    (@actor ? @headers.merge('Signature' => signature) : @headers).without(REQUEST_TARGET)
   end
 
   class << self
@@ -140,49 +165,81 @@ class Request
     end
 
     def http_client
-      HTTP.use(:auto_inflate).follow(max_hops: 3)
+      HTTP.use(:auto_inflate)
     end
   end
 
   private
 
+  def perform_cavage_signed_request
+    headers = @headers
+    headers = headers.merge('Digest' => "SHA-256=#{Digest::SHA256.base64digest(@options[:body])}") if @options[:body]
+
+    client = http_client
+
+    if @signing_keypair.present?
+      client = client.use(
+        http_cavage_signature: {
+          keypair: @signing_keypair,
+          covered_headers: headers.keys - %w(User-Agent Accept-Encoding Accept),
+        }
+      )
+    end
+
+    client.request(@verb, @url.to_s, @options.merge(headers:))
+  end
+
+  def perform_rfc9421_signed_request
+    headers = @headers
+    headers = headers.merge('content-digest' => "sha-256=:#{OpenSSL::Digest.base64digest('sha256', @options[:body])}:") if @options[:body]
+
+    client = http_client
+
+    if @signing_keypair.present?
+      client = client.use(
+        http_signature: {
+          key: @signing_keypair.linzer_private_key,
+          covered_components: @options.key?(:body) ? %w(@method @target-uri content-digest) : %w(@method @target-uri),
+        }
+      )
+    end
+
+    client.request(@verb, @url.to_s, @options.merge(headers:))
+  end
+
+  # Using code from https://github.com/sporkmonger/addressable/blob/3450895887d0a1770660d8831d1b6fcfed9bd9d6/lib/addressable/uri.rb#L1609-L1635
+  # to preserve some URL Encodings while normalizing
+  def normalize_preserving_url_encodings(url, preserved_chars = SAFE_PRESERVED_CHARS, *flags)
+    original_uri = Addressable::URI.parse(url)
+    normalized_uri = original_uri.normalize
+
+    if original_uri.query
+      modified_query_class = Addressable::URI::CharacterClasses::QUERY.dup
+      modified_query_class.sub!('\\&', '').sub!('\\;', '')
+
+      pairs = original_uri.query.split('&', -1)
+      pairs.delete_if(&:empty?).uniq! if flags.include?(:compacted)
+      pairs.sort! if flags.include?(:sorted)
+
+      normalized_query = pairs.map do |pair|
+        Addressable::URI.normalize_component(
+          pair,
+          modified_query_class,
+          preserved_chars
+        )
+      end.join('&')
+
+      normalized_uri.query = normalized_query == '' ? nil : normalized_query
+    end
+
+    normalized_uri
+  end
+
   def set_common_headers!
-    @headers[REQUEST_TARGET]    = request_target
     @headers['User-Agent']      = Mastodon::Version.user_agent
     @headers['Host']            = @url.host
     @headers['Date']            = Time.now.utc.httpdate
     @headers['Accept-Encoding'] = 'gzip' if @verb != :head
-  end
-
-  def set_digest!
-    @headers['Digest'] = "SHA-256=#{Digest::SHA256.base64digest(@options[:body])}"
-  end
-
-  def request_target
-    if @url.query.nil? || !@full_path
-      "#{@verb} #{@url.path}"
-    else
-      "#{@verb} #{@url.path}?#{@url.query}"
-    end
-  end
-
-  def signature
-    algorithm = 'rsa-sha256'
-    signature = Base64.strict_encode64(@keypair.sign(OpenSSL::Digest.new('SHA256'), signed_string))
-
-    "keyId=\"#{key_id}\",algorithm=\"#{algorithm}\",headers=\"#{signed_headers.keys.join(' ').downcase}\",signature=\"#{signature}\""
-  end
-
-  def signed_string
-    signed_headers.map { |key, value| "#{key.downcase}: #{value}" }.join("\n")
-  end
-
-  def signed_headers
-    @headers.without('User-Agent', 'Accept-Encoding')
-  end
-
-  def key_id
-    ActivityPub::TagManager.instance.key_uri_for(@actor)
   end
 
   def http_client
@@ -234,17 +291,21 @@ class Request
     end
 
     def body_with_limit(limit = 1.megabyte)
-      raise Mastodon::LengthValidationError if content_length.present? && content_length > limit
+      require_limit_not_exceeded!(limit)
 
       contents = truncated_body(limit)
-      raise Mastodon::LengthValidationError if contents.bytesize > limit
+      raise Mastodon::LengthValidationError, "Body size exceeds limit of #{limit}" if contents.bytesize > limit
 
       contents
+    end
+
+    def require_limit_not_exceeded!(limit)
+      raise Mastodon::LengthValidationError, "Content-Length #{content_length} exceeds limit of #{limit}" if content_length.present? && content_length > limit
     end
   end
 
   if ::HTTP::Response.methods.include?(:body_with_limit) && !Rails.env.production?
-    abort 'HTTP::Response#body_with_limit is already defined, the monkey patch will not be applied'
+    raise 'HTTP::Response#body_with_limit is already defined, the monkey patch will not be applied'
   else
     class ::HTTP::Response
       include Request::ClientLimit
@@ -259,13 +320,11 @@ class Request
 
         addresses = []
         begin
-          addresses = [IPAddr.new(host)]
+          addresses = [IPAddr.new(host).to_s]
         rescue IPAddr::InvalidAddressError
-          Resolv::DNS.open do |dns|
-            dns.timeouts = 5
-            addresses = dns.getaddresses(host)
-            addresses = addresses.filter { |addr| addr.is_a?(Resolv::IPv6) }.take(2) + addresses.filter { |addr| !addr.is_a?(Resolv::IPv6) }.take(2)
-          end
+          resolvers = [Resolv::Hosts.new, Resolv::DNS.new.tap { |dns| dns.timeouts = 5 }]
+          addresses = Resolv.new(resolvers).getaddresses(host)
+          addresses = addresses.grep(Resolv::IPv6::Regex).take(2) + addresses.grep_v(Resolv::IPv6::Regex).take(2)
         end
 
         socks = []
@@ -274,7 +333,7 @@ class Request
         addresses.each do |address|
           check_private_address(address, host)
 
-          sock     = ::Socket.new(address.is_a?(Resolv::IPv6) ? ::Socket::AF_INET6 : ::Socket::AF_INET, ::Socket::SOCK_STREAM, 0)
+          sock     = ::Socket.new(address.match?(Resolv::IPv6::Regex) ? ::Socket::AF_INET6 : ::Socket::AF_INET, ::Socket::SOCK_STREAM, 0)
           sockaddr = ::Socket.pack_sockaddr_in(port, address.to_s)
 
           sock.setsockopt(::Socket::IPPROTO_TCP, ::Socket::TCP_NODELAY, 1)
@@ -330,13 +389,9 @@ class Request
       def check_private_address(address, host)
         addr = IPAddr.new(address.to_s)
 
-        return if Rails.env.development? || private_address_exceptions.any? { |range| range.include?(addr) }
+        return if Rails.env.development? || Rails.configuration.x.private_address_exceptions.any? { |range| range.include?(addr) }
 
         raise Mastodon::PrivateNetworkAddressError, host if PrivateAddressCheck.private_address?(addr)
-      end
-
-      def private_address_exceptions
-        @private_address_exceptions = (ENV['ALLOWED_PRIVATE_ADDRESSES'] || '').split(/(?:\s*,\s*|\s+)/).map { |addr| IPAddr.new(addr) }
       end
     end
   end
@@ -351,5 +406,5 @@ class Request
     end
   end
 
-  private_constant :ClientLimit, :Socket, :ProxySocket
+  private_constant :ClientLimit
 end

@@ -48,6 +48,19 @@ RSpec.describe Auth::SessionsController do
         expect(response).to redirect_to(new_user_session_path)
       end
     end
+
+    context 'with a deleted user' do
+      before do
+        user.account.mark_deleted!
+      end
+
+      it 'redirects to home after sign out' do
+        sign_in(user, scope: :user)
+        delete :destroy
+
+        expect(response).to redirect_to(new_user_session_path)
+      end
+    end
   end
 
   describe 'POST #create' do
@@ -70,7 +83,7 @@ RSpec.describe Auth::SessionsController do
         end
 
         it 'shows a login error and does not log the user in' do
-          expect(flash[:alert]).to match I18n.t('devise.failure.invalid', authentication_keys: I18n.t('activerecord.attributes.user.email'))
+          expect(flash[:alert]).to match(/#{failure_message_invalid_email}/i)
 
           expect(controller.current_user).to be_nil
         end
@@ -100,11 +113,14 @@ RSpec.describe Auth::SessionsController do
       let(:user) { Fabricate(:user, email: 'foo@bar.com', password: 'abcdefgh') }
 
       context 'when using a valid password' do
-        before do
+        subject do
           post :create, params: { user: { email: user.email, password: user.password } }
         end
 
         it 'redirects to home and logs the user in' do
+          expect { subject }
+            .to change(user.login_activities.where(success: true), :count).by(1)
+
           expect(response).to redirect_to(root_path)
 
           expect(controller.current_user).to eq user
@@ -160,7 +176,7 @@ RSpec.describe Auth::SessionsController do
         end
 
         it 'shows a login error and does not log the user in' do
-          expect(flash[:alert]).to match I18n.t('devise.failure.invalid', authentication_keys: I18n.t('activerecord.attributes.user.email'))
+          expect(flash[:alert]).to match(/#{failure_message_invalid_email}/i)
 
           expect(controller.current_user).to be_nil
         end
@@ -208,7 +224,7 @@ RSpec.describe Auth::SessionsController do
     context 'when using two-factor authentication' do
       context 'with OTP enabled as second factor' do
         let!(:user) do
-          Fabricate(:user, email: 'x@y.com', password: 'abcdefgh', otp_required_for_login: true, otp_secret: User.generate_otp_secret(32))
+          Fabricate(:user, email: 'x@y.com', password: 'abcdefgh', otp_required_for_login: true, otp_secret: User.generate_otp_secret)
         end
 
         let!(:recovery_codes) do
@@ -223,14 +239,14 @@ RSpec.describe Auth::SessionsController do
           end
 
           it 'renders two factor authentication page' do
-            expect(controller).to render_template('two_factor')
-            expect(controller).to render_template(partial: '_otp_authentication_form')
+            expect(response.parsed_body)
+              .to have_css('p.hint.authentication-hint', text: I18n.t('simple_form.hints.sessions.otp'))
           end
         end
 
         context 'when using email and password after an unfinished log-in attempt to a 2FA-protected account' do
           let!(:other_user) do
-            Fabricate(:user, email: 'z@y.com', password: 'abcdefgh', otp_required_for_login: true, otp_secret: User.generate_otp_secret(32))
+            Fabricate(:user, email: 'z@y.com', password: 'abcdefgh', otp_required_for_login: true, otp_secret: User.generate_otp_secret)
           end
 
           before do
@@ -239,8 +255,8 @@ RSpec.describe Auth::SessionsController do
           end
 
           it 'renders two factor authentication page' do
-            expect(controller).to render_template('two_factor')
-            expect(controller).to render_template(partial: '_otp_authentication_form')
+            expect(response.parsed_body)
+              .to have_css('p.hint.authentication-hint', text: I18n.t('simple_form.hints.sessions.otp'))
           end
         end
 
@@ -250,8 +266,8 @@ RSpec.describe Auth::SessionsController do
           end
 
           it 'renders two factor authentication page' do
-            expect(controller).to render_template('two_factor')
-            expect(controller).to render_template(partial: '_otp_authentication_form')
+            expect(response.parsed_body)
+              .to have_css('p.hint.authentication-hint', text: I18n.t('simple_form.hints.sessions.otp'))
           end
         end
 
@@ -265,10 +281,9 @@ RSpec.describe Auth::SessionsController do
 
           it 'does not log the user in, sets a flash message, and sends a suspicious sign in email', :inline_jobs do
             emails = capture_emails do
-              Auth::SessionsController::MAX_2FA_ATTEMPTS_PER_HOUR.times do
-                post :create, params: { user: { otp_attempt: '1234' } }, session: { attempt_user_id: user.id, attempt_user_updated_at: user.updated_at.to_s }
-                expect(controller.current_user).to be_nil
-              end
+              expect { process_maximum_two_factor_attempts }
+                .to change(user.login_activities.where(success: false), :count).by(1)
+
               post :create, params: { user: { otp_attempt: user.current_otp } }, session: { attempt_user_id: user.id, attempt_user_updated_at: user.updated_at.to_s }
             end
 
@@ -285,6 +300,13 @@ RSpec.describe Auth::SessionsController do
                 to: contain_exactly(user.email),
                 subject: eq(I18n.t('user_mailer.failed_2fa.subject'))
               )
+          end
+
+          def process_maximum_two_factor_attempts
+            Auth::SessionsController::MAX_2FA_ATTEMPTS_PER_HOUR.times do
+              post :create, params: { user: { otp_attempt: '1234' } }, session: { attempt_user_id: user.id, attempt_user_updated_at: user.updated_at.to_s }
+              expect(controller.current_user).to be_nil
+            end
           end
         end
 
@@ -342,7 +364,7 @@ RSpec.describe Auth::SessionsController do
 
       context 'with WebAuthn and OTP enabled as second factor' do
         let!(:user) do
-          Fabricate(:user, email: 'x@y.com', password: 'abcdefgh', otp_required_for_login: true, otp_secret: User.generate_otp_secret(32))
+          Fabricate(:user, email: 'x@y.com', password: 'abcdefgh', otp_required_for_login: true, otp_secret: User.generate_otp_secret)
         end
 
         let!(:webauthn_credential) do
@@ -378,8 +400,8 @@ RSpec.describe Auth::SessionsController do
           end
 
           it 'renders webauthn authentication page' do
-            expect(controller).to render_template('two_factor')
-            expect(controller).to render_template(partial: '_webauthn_form')
+            expect(response.parsed_body)
+              .to have_css('h3.title', text: I18n.t('simple_form.title.sessions.webauthn'))
           end
         end
 
@@ -389,8 +411,8 @@ RSpec.describe Auth::SessionsController do
           end
 
           it 'renders webauthn authentication page' do
-            expect(controller).to render_template('two_factor')
-            expect(controller).to render_template(partial: '_webauthn_form')
+            expect(response.parsed_body)
+              .to have_css('h3.title', text: I18n.t('simple_form.title.sessions.webauthn'))
           end
         end
 
@@ -402,7 +424,7 @@ RSpec.describe Auth::SessionsController do
           end
 
           it 'instructs the browser to redirect to home, logs the user in, and updates the sign count' do
-            expect(body_as_json[:redirect_path]).to eq(root_path)
+            expect(response.parsed_body[:redirect_path]).to eq(root_path)
 
             expect(controller.current_user).to eq user
 
@@ -411,45 +433,9 @@ RSpec.describe Auth::SessionsController do
         end
       end
     end
-  end
 
-  describe 'GET #webauthn_options' do
-    subject { get :webauthn_options, session: { attempt_user_id: user.id } }
-
-    let!(:user) do
-      Fabricate(:user, email: 'x@y.com', password: 'abcdefgh', otp_required_for_login: true, otp_secret: User.generate_otp_secret(32))
-    end
-
-    context 'with WebAuthn and OTP enabled as second factor' do
-      let(:domain) { "#{Rails.configuration.x.use_https ? 'https' : 'http'}://#{Rails.configuration.x.web_domain}" }
-
-      let(:fake_client) { WebAuthn::FakeClient.new(domain) }
-
-      before do
-        user.update(webauthn_id: WebAuthn.generate_user_id)
-        public_key_credential = WebAuthn::Credential.from_create(fake_client.create)
-        user.webauthn_credentials.create(
-          nickname: 'SecurityKeyNickname',
-          external_id: public_key_credential.id,
-          public_key: public_key_credential.public_key,
-          sign_count: '1000'
-        )
-        post :create, params: { user: { email: user.email, password: user.password } }
-      end
-
-      it 'returns http success' do
-        subject
-
-        expect(response).to have_http_status 200
-      end
-    end
-
-    context 'when WebAuthn not enabled' do
-      it 'returns http unauthorized' do
-        subject
-
-        expect(response).to have_http_status 401
-      end
+    def failure_message_invalid_email
+      I18n.t('devise.failure.invalid', authentication_keys: I18n.t('activerecord.attributes.user.email'))
     end
   end
 end

@@ -2,7 +2,7 @@
 
 require 'rails_helper'
 
-describe 'The /.well-known/webfinger endpoint' do
+RSpec.describe 'The /.well-known/webfinger endpoint' do
   subject(:perform_request!) { get webfinger_url(resource: resource) }
 
   let(:alternate_domains) { [] }
@@ -24,10 +24,10 @@ describe 'The /.well-known/webfinger endpoint' do
 
       expect(response.media_type).to eq 'application/jrd+json'
 
-      expect(body_as_json)
+      expect(response.parsed_body)
         .to include(
-          subject: eq('acct:alice@cb6e6126.ngrok.io'),
-          aliases: include('https://cb6e6126.ngrok.io/@alice', 'https://cb6e6126.ngrok.io/users/alice')
+          subject: eq(alice.to_webfinger_s),
+          aliases: include("https://#{Rails.configuration.x.local_domain}/@alice", ActivityPub::TagManager.instance.uri_for(alice))
         )
     end
   end
@@ -53,11 +53,36 @@ describe 'The /.well-known/webfinger endpoint' do
     it_behaves_like 'a successful response'
   end
 
-  context 'when an account is permanently suspended or deleted' do
+  context 'when an account is pending deletion' do
+    let(:resource) { alice.to_webfinger_s }
+
+    before do
+      alice.mark_deleted!
+      perform_request!
+    end
+
+    it_behaves_like 'a successful response'
+  end
+
+  context 'when an account is permanently suspended' do
     let(:resource) { alice.to_webfinger_s }
 
     before do
       alice.suspend!
+      alice.deletion_request.destroy
+      perform_request!
+    end
+
+    it 'returns http gone' do
+      expect(response).to have_http_status(410)
+    end
+  end
+
+  context 'when an account is permanently deleted' do
+    let(:resource) { alice.to_webfinger_s }
+
+    before do
+      alice.mark_deleted!
       alice.deletion_request.destroy
       perform_request!
     end
@@ -116,22 +141,22 @@ describe 'The /.well-known/webfinger endpoint' do
       perform_request!
     end
 
-    it 'returns http success' do
+    it 'returns http success with expect headers and media type' do
       expect(response).to have_http_status(200)
-    end
 
-    it 'sets only a Vary Origin header' do
       expect(response.headers['Vary']).to eq('Origin')
-    end
 
-    it 'returns application/jrd+json' do
       expect(response.media_type).to eq 'application/jrd+json'
+
+      expect(response.parsed_body)
+        .to include(
+          subject: instance_actor.to_webfinger_s,
+          aliases: [instance_actor_url]
+        )
     end
 
-    it 'returns links for the internal account' do
-      json = body_as_json
-      expect(json[:subject]).to eq 'acct:mastodon.internal@cb6e6126.ngrok.io'
-      expect(json[:aliases]).to eq ['https://cb6e6126.ngrok.io/actor']
+    def instance_actor
+      Account.where(id: Account::INSTANCE_ACTOR_ID).first
     end
   end
 
@@ -166,22 +191,24 @@ describe 'The /.well-known/webfinger endpoint' do
     it 'returns avatar in response' do
       perform_request!
 
-      avatar_link = get_avatar_link(body_as_json)
-      expect(avatar_link).to_not be_nil
-      expect(avatar_link[:type]).to eq alice.avatar.content_type
-      expect(avatar_link[:href]).to eq Addressable::URI.new(host: Rails.configuration.x.local_domain, path: alice.avatar.to_s, scheme: 'https').to_s
+      expect(response_avatar_link)
+        .to be_present
+        .and include(
+          type: eq(alice.avatar.content_type),
+          href: eq(Addressable::URI.new(host: Rails.configuration.x.local_domain, path: alice.avatar.to_s, scheme: 'https').to_s)
+        )
     end
 
     context 'with limited federation mode' do
       before do
-        allow(Rails.configuration.x).to receive(:limited_federation_mode).and_return(true)
+        allow(Rails.configuration.x.mastodon).to receive(:limited_federation_mode).and_return(true)
       end
 
       it 'does not return avatar in response' do
         perform_request!
 
-        avatar_link = get_avatar_link(body_as_json)
-        expect(avatar_link).to be_nil
+        expect(response_avatar_link)
+          .to be_nil
       end
     end
 
@@ -195,8 +222,8 @@ describe 'The /.well-known/webfinger endpoint' do
       it 'does not return avatar in response' do
         perform_request!
 
-        avatar_link = get_avatar_link(body_as_json)
-        expect(avatar_link).to be_nil
+        expect(response_avatar_link)
+          .to be_nil
       end
     end
   end
@@ -210,8 +237,8 @@ describe 'The /.well-known/webfinger endpoint' do
     end
 
     it 'does not return avatar in response' do
-      avatar_link = get_avatar_link(body_as_json)
-      expect(avatar_link).to be_nil
+      expect(response_avatar_link)
+        .to be_nil
     end
   end
 
@@ -245,7 +272,9 @@ describe 'The /.well-known/webfinger endpoint' do
 
   private
 
-  def get_avatar_link(json)
-    json[:links].find { |link| link[:rel] == 'http://webfinger.net/rel/avatar' }
+  def response_avatar_link
+    response
+      .parsed_body[:links]
+      .find { |link| link[:rel] == 'http://webfinger.net/rel/avatar' }
   end
 end

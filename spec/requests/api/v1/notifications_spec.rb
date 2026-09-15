@@ -3,10 +3,96 @@
 require 'rails_helper'
 
 RSpec.describe 'Notifications' do
-  let(:user)    { Fabricate(:user, account_attributes: { username: 'alice' }) }
-  let(:token)   { Fabricate(:accessible_access_token, resource_owner_id: user.id, scopes: scopes) }
-  let(:scopes)  { 'read:notifications write:notifications' }
-  let(:headers) { { 'Authorization' => "Bearer #{token.token}" } }
+  include_context 'with API authentication', oauth_scopes: 'read:notifications write:notifications'
+
+  let(:user) { Fabricate(:user, account_attributes: { username: 'alice' }) }
+
+  describe 'GET /api/v1/notifications/unread_count', :inline_jobs do
+    subject do
+      get '/api/v1/notifications/unread_count', headers: headers, params: params
+    end
+
+    let(:params) { {} }
+
+    before do
+      first_status = PostStatusService.new.call(user.account, text: 'Test')
+      ReblogService.new.call(Fabricate(:account), first_status)
+      PostStatusService.new.call(Fabricate(:account), text: 'Hello @alice')
+      FavouriteService.new.call(Fabricate(:account), first_status)
+      FavouriteService.new.call(Fabricate(:account), first_status)
+      FollowService.new.call(Fabricate(:account), user.account)
+    end
+
+    it_behaves_like 'forbidden for wrong scope', 'write write:notifications'
+
+    context 'with no options' do
+      it 'returns expected notifications count' do
+        subject
+
+        expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body[:count]).to eq 5
+      end
+    end
+
+    context 'with a read marker' do
+      before do
+        id = user.account.notifications.browserable.order(id: :desc).offset(2).first.id
+        user.markers.create!(timeline: 'notifications', last_read_id: id)
+      end
+
+      it 'returns expected notifications count' do
+        subject
+
+        expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body[:count]).to eq 2
+      end
+    end
+
+    context 'with exclude_types param' do
+      let(:params) { { exclude_types: %w(mention) } }
+
+      it 'returns expected notifications count' do
+        subject
+
+        expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body[:count]).to eq 4
+      end
+    end
+
+    context 'with a user-provided limit' do
+      let(:params) { { limit: 2 } }
+
+      it 'returns a capped value' do
+        subject
+
+        expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body[:count]).to eq 2
+      end
+    end
+
+    context 'when there are more notifications than the limit' do
+      before do
+        stub_const('Api::V1::NotificationsController::DEFAULT_NOTIFICATIONS_COUNT_LIMIT', 2)
+      end
+
+      it 'returns a capped value' do
+        subject
+
+        expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body[:count]).to eq Api::V1::NotificationsController::DEFAULT_NOTIFICATIONS_COUNT_LIMIT
+      end
+    end
+  end
 
   describe 'GET /api/v1/notifications', :inline_jobs do
     subject do
@@ -34,9 +120,11 @@ RSpec.describe 'Notifications' do
         subject
 
         expect(response).to have_http_status(200)
-        expect(body_as_json.size).to eq 5
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body.size).to eq 5
         expect(body_json_types).to include('reblog', 'mention', 'favourite', 'follow')
-        expect(body_as_json.any? { |x| x[:filtered] }).to be false
+        expect(response.parsed_body.any? { |x| x[:filtered] }).to be false
       end
     end
 
@@ -47,9 +135,11 @@ RSpec.describe 'Notifications' do
         subject
 
         expect(response).to have_http_status(200)
-        expect(body_as_json.size).to eq 6
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body.size).to eq 6
         expect(body_json_types).to include('reblog', 'mention', 'favourite', 'follow')
-        expect(body_as_json.any? { |x| x[:filtered] }).to be true
+        expect(response.parsed_body.any? { |x| x[:filtered] }).to be true
       end
     end
 
@@ -60,11 +150,13 @@ RSpec.describe 'Notifications' do
         subject
 
         expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
         expect(body_json_account_ids.uniq).to eq [tom.account.id.to_s]
       end
 
       def body_json_account_ids
-        body_as_json.map { |x| x[:account][:id] }
+        response.parsed_body.map { |x| x[:account][:id] }
       end
     end
 
@@ -75,7 +167,9 @@ RSpec.describe 'Notifications' do
         subject
 
         expect(response).to have_http_status(200)
-        expect(body_as_json.size).to eq 0
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body.size).to eq 0
       end
     end
 
@@ -86,7 +180,9 @@ RSpec.describe 'Notifications' do
         subject
 
         expect(response).to have_http_status(200)
-        expect(body_as_json.size).to_not eq 0
+        expect(response.content_type)
+          .to start_with('application/json')
+        expect(response.parsed_body.size).to_not eq 0
         expect(body_json_types.uniq).to_not include 'mention'
       end
     end
@@ -98,6 +194,8 @@ RSpec.describe 'Notifications' do
         subject
 
         expect(response).to have_http_status(200)
+        expect(response.content_type)
+          .to start_with('application/json')
         expect(body_json_types.uniq).to eq ['mention']
       end
     end
@@ -108,9 +206,9 @@ RSpec.describe 'Notifications' do
       it 'returns the requested number of notifications paginated', :aggregate_failures do
         subject
 
-        notifications = user.account.notifications.browserable
+        notifications = user.account.notifications.browserable.order(id: :asc)
 
-        expect(body_as_json.size)
+        expect(response.parsed_body.size)
           .to eq(params[:limit])
 
         expect(response)
@@ -122,7 +220,7 @@ RSpec.describe 'Notifications' do
     end
 
     def body_json_types
-      body_as_json.pluck(:type)
+      response.parsed_body.pluck(:type)
     end
   end
 
@@ -139,6 +237,8 @@ RSpec.describe 'Notifications' do
       subject
 
       expect(response).to have_http_status(200)
+      expect(response.content_type)
+        .to start_with('application/json')
     end
 
     context 'when notification belongs to someone else' do
@@ -148,6 +248,8 @@ RSpec.describe 'Notifications' do
         subject
 
         expect(response).to have_http_status(404)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
   end
@@ -165,6 +267,8 @@ RSpec.describe 'Notifications' do
       subject
 
       expect(response).to have_http_status(200)
+      expect(response.content_type)
+        .to start_with('application/json')
       expect { notification.reload }.to raise_error(ActiveRecord::RecordNotFound)
     end
 
@@ -175,6 +279,8 @@ RSpec.describe 'Notifications' do
         subject
 
         expect(response).to have_http_status(404)
+        expect(response.content_type)
+          .to start_with('application/json')
       end
     end
   end
@@ -195,6 +301,8 @@ RSpec.describe 'Notifications' do
 
       expect(user.account.reload.notifications).to be_empty
       expect(response).to have_http_status(200)
+      expect(response.content_type)
+        .to start_with('application/json')
     end
   end
 end

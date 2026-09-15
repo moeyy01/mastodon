@@ -35,7 +35,7 @@ module LanguagesHelper
     cy: ['Welsh', 'Cymraeg'].freeze,
     da: ['Danish', 'dansk'].freeze,
     de: ['German', 'Deutsch'].freeze,
-    dv: ['Divehi', 'Dhivehi'].freeze,
+    dv: ['Divehi', 'ދިވެހި'].freeze,
     dz: ['Dzongkha', 'རྫོང་ཁ'].freeze,
     ee: ['Ewe', 'Eʋegbe'].freeze,
     el: ['Greek', 'Ελληνικά'].freeze,
@@ -100,13 +100,14 @@ module LanguagesHelper
     lo: ['Lao', 'ລາວ'].freeze,
     lt: ['Lithuanian', 'lietuvių kalba'].freeze,
     lu: ['Luba-Katanga', 'Tshiluba'].freeze,
-    lv: ['Latvian', 'latviešu valoda'].freeze,
+    lv: ['Latvian', 'Latviski'].freeze,
     mg: ['Malagasy', 'fiteny malagasy'].freeze,
     mh: ['Marshallese', 'Kajin M̧ajeļ'].freeze,
     mi: ['Māori', 'te reo Māori'].freeze,
     mk: ['Macedonian', 'македонски јазик'].freeze,
     ml: ['Malayalam', 'മലയാളം'].freeze,
     mn: ['Mongolian', 'Монгол хэл'].freeze,
+    'mn-Mong': ['Traditional Mongolian', 'ᠮᠣᠩᠭᠣᠯ ᠬᠡᠯᠡ'].freeze,
     mr: ['Marathi', 'मराठी'].freeze,
     ms: ['Malay', 'Bahasa Melayu'].freeze,
     'ms-Arab': ['Jawi Malay', 'بهاس ملايو'].freeze,
@@ -162,7 +163,7 @@ module LanguagesHelper
     th: ['Thai', 'ไทย'].freeze,
     ti: ['Tigrinya', 'ትግርኛ'].freeze,
     tk: ['Turkmen', 'Türkmen'].freeze,
-    tl: ['Tagalog', 'Wikang Tagalog'].freeze,
+    tl: ['Tagalog', 'Tagalog'].freeze,
     tn: ['Tswana', 'Setswana'].freeze,
     to: ['Tonga', 'faka Tonga'].freeze,
     tr: ['Turkish', 'Türkçe'].freeze,
@@ -193,12 +194,15 @@ module LanguagesHelper
     ckb: ['Sorani (Kurdish)', 'سۆرانی'].freeze,
     cnr: ['Montenegrin', 'crnogorski'].freeze,
     csb: ['Kashubian', 'Kaszëbsczi'].freeze,
+    gsw: ['Swiss German', 'Schwiizertütsch'].freeze,
     jbo: ['Lojban', 'la .lojban.'].freeze,
     kab: ['Kabyle', 'Taqbaylit'].freeze,
     ldn: ['Láadan', 'Láadan'].freeze,
     lfn: ['Lingua Franca Nova', 'lingua franca nova'].freeze,
+    lzz: ['Lazuri', 'ლაზური ნენა'].freeze,
     moh: ['Mohawk', 'Kanienʼkéha'].freeze,
     nds: ['Low German', 'Plattdüütsch'].freeze,
+    ota: ['Ottoman Turkish', 'لسان عثمانی'].freeze,
     pdc: ['Pennsylvania Dutch', 'Pennsilfaani-Deitsch'].freeze,
     sco: ['Scots', 'Scots'].freeze,
     sma: ['Southern Sami', 'Åarjelsaemien Gïele'].freeze,
@@ -207,6 +211,7 @@ module LanguagesHelper
     tok: ['Toki Pona', 'toki pona'].freeze,
     vai: ['Vai', 'ꕙꔤ'].freeze,
     xal: ['Kalmyk', 'Хальмг келн'].freeze,
+    xmf: ['Mingrelian', 'მარგალური ნინა'].freeze,
     zba: ['Balaibalan', 'باليبلن'].freeze,
     zgh: ['Standard Moroccan Tamazight', 'ⵜⴰⵎⴰⵣⵉⵖⵜ'].freeze,
   }.freeze
@@ -221,7 +226,14 @@ module LanguagesHelper
     'zh-YUE': ['Cantonese', '廣東話'].freeze,
   }.freeze
 
-  SUPPORTED_LOCALES = {}.merge(ISO_639_1).merge(ISO_639_1_REGIONAL).merge(ISO_639_3).freeze
+  # Since nan is not translated but nan-TW is translated,
+  # to enable the ISO-639-3 language-code with the regional variant but no
+  # official name, we use a specific hash for nan-TW
+  ISO_639_3_REGIONAL = {
+    'nan-TW': ['Hokkien (Taiwan)', '臺語 (Hô-ló話)'].freeze,
+  }.freeze
+
+  SUPPORTED_LOCALES = {}.merge(ISO_639_1).merge(ISO_639_1_REGIONAL).merge(ISO_639_3).merge(ISO_639_3_REGIONAL).freeze
 
   # For ISO-639-1 and ISO-639-3 language codes, we have their official
   # names, but for some translations, we need the names of the
@@ -238,9 +250,7 @@ module LanguagesHelper
 
   # Helper for self.sorted_locale_keys
   private_class_method def self.locale_name_for_sorting(locale)
-    if locale.blank? || locale == 'und'
-      '000'
-    elsif (supported_locale = SUPPORTED_LOCALES[locale.to_sym])
+    if (supported_locale = SUPPORTED_LOCALES[locale.to_sym])
       ASCIIFolding.new.fold(supported_locale[1]).downcase
     elsif (regional_locale = REGIONAL_LOCALE_NAMES[locale.to_sym])
       ASCIIFolding.new.fold(regional_locale).downcase

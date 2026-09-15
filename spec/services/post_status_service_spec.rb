@@ -34,7 +34,7 @@ RSpec.describe PostStatusService do
 
     it 'schedules a status for future creation and does not create one immediately' do
       media = Fabricate(:media_attachment, account: account)
-      status = subject.call(account, text: 'Hi future!', media_ids: [media.id], scheduled_at: future)
+      status = subject.call(account, text: 'Hi future!', media_ids: [media.id.to_s], scheduled_at: future)
 
       expect(status)
         .to be_a(ScheduledStatus)
@@ -42,7 +42,7 @@ RSpec.describe PostStatusService do
           scheduled_at: eq(future),
           params: include(
             'text' => eq('Hi future!'),
-            'media_ids' => contain_exactly(media.id)
+            'media_ids' => contain_exactly(media.id.to_s)
           )
         )
       expect(media.reload.status).to be_nil
@@ -57,8 +57,8 @@ RSpec.describe PostStatusService do
 
     it 'returns existing status when used twice with idempotency key' do
       account = Fabricate(:account)
-      status1 = subject.call(account, text: 'test', idempotency: 'meepmeep', scheduled_at: future)
-      status2 = subject.call(account, text: 'test', idempotency: 'meepmeep', scheduled_at: future)
+      status1 = described_class.new.call(account, text: 'test', idempotency: 'meepmeep', scheduled_at: future)
+      status2 = described_class.new.call(account, text: 'test', idempotency: 'meepmeep', scheduled_at: future)
       expect(status2.id).to eq status1.id
     end
 
@@ -68,7 +68,10 @@ RSpec.describe PostStatusService do
       it 'raises invalid record error' do
         expect do
           subject.call(account, text: 'Hi future!', scheduled_at: invalid_scheduled_time)
-        end.to raise_error(ActiveRecord::RecordInvalid)
+        end.to raise_error(
+          ActiveRecord::RecordInvalid,
+          'Validation failed: Scheduled at date must be in the future'
+        )
       end
     end
   end
@@ -123,6 +126,15 @@ RSpec.describe PostStatusService do
     expect(status.visibility).to eq 'private'
   end
 
+  it 'raises on an invalid visibility' do
+    expect do
+      create_status_with_options(visibility: :xxx)
+    end.to raise_error(
+      ActiveRecord::RecordInvalid,
+      'Validation failed: Visibility is not included in the list'
+    )
+  end
+
   it 'creates a status with limited visibility for silenced users' do
     status = subject.call(Fabricate(:account, silenced: true), text: 'test', visibility: :public)
 
@@ -148,6 +160,12 @@ RSpec.describe PostStatusService do
     expect(status.language).to eq 'en'
   end
 
+  it 'creates a status with the quote approval policy set' do
+    status = create_status_with_options(quote_approval_policy: InteractionPolicy::POLICY_FLAGS[:followers] << 16)
+
+    expect(status.quote_approval_policy).to eq(InteractionPolicy::POLICY_FLAGS[:followers] << 16)
+  end
+
   it 'processes mentions' do
     mention_service = instance_double(ProcessMentionsService)
     allow(mention_service).to receive(:call)
@@ -157,7 +175,7 @@ RSpec.describe PostStatusService do
     status = subject.call(account, text: 'test status update')
 
     expect(ProcessMentionsService).to have_received(:new)
-    expect(mention_service).to have_received(:call).with(status, save_records: false)
+    expect(mention_service).to have_received(:call).with(status)
   end
 
   it 'safeguards mentions' do
@@ -191,6 +209,16 @@ RSpec.describe PostStatusService do
     expect(hashtags_service).to have_received(:call).with(status)
   end
 
+  it 'processes tagged objects' do
+    account = Fabricate(:account)
+    collection = Fabricate(:collection)
+
+    status = subject.call(account, text: "test #{ActivityPub::TagManager.instance.uri_for(collection)} #{ActivityPub::TagManager.instance.uri_for(collection)}")
+
+    expect(status.tagged_objects.map(&:object))
+      .to contain_exactly(collection)
+  end
+
   it 'gets distributed' do
     allow(DistributionWorker).to receive(:perform_async)
     allow(ActivityPub::DistributionWorker).to receive(:perform_async)
@@ -219,7 +247,7 @@ RSpec.describe PostStatusService do
     status = subject.call(
       account,
       text: 'test status update',
-      media_ids: [media.id]
+      media_ids: [media.id.to_s]
     )
 
     expect(media.reload.status).to eq status
@@ -229,13 +257,16 @@ RSpec.describe PostStatusService do
     account = Fabricate(:account)
     media = Fabricate(:media_attachment, account: Fabricate(:account))
 
-    subject.call(
-      account,
-      text: 'test status update',
-      media_ids: [media.id]
+    expect do
+      subject.call(
+        account,
+        text: 'test status update',
+        media_ids: [media.id.to_s]
+      )
+    end.to raise_error(
+      Mastodon::ValidationError,
+      I18n.t('media_attachments.validations.not_found', ids: media.id)
     )
-
-    expect(media.reload.status).to be_nil
   end
 
   it 'does not allow attaching more files than configured limit' do
@@ -246,7 +277,7 @@ RSpec.describe PostStatusService do
       subject.call(
         account,
         text: 'test status update',
-        media_ids: Array.new(2) { Fabricate(:media_attachment, account: account) }.map(&:id)
+        media_ids: Array.new(2) { Fabricate(:media_attachment, account: account) }.map { |m| m.id.to_s }
       )
     end.to raise_error(
       Mastodon::ValidationError,
@@ -268,7 +299,7 @@ RSpec.describe PostStatusService do
         media_ids: [
           video,
           image,
-        ].map(&:id)
+        ].map { |m| m.id.to_s }
       )
     end.to raise_error(
       Mastodon::ValidationError,
@@ -276,10 +307,42 @@ RSpec.describe PostStatusService do
     )
   end
 
+  it 'correctly requests a quote for remote posts' do
+    account = Fabricate(:account)
+    quoted_status = Fabricate(:status, account: Fabricate(:account, domain: 'example.com'))
+
+    expect { subject.call(account, text: 'test', quoted_status: quoted_status) }
+      .to enqueue_sidekiq_job(ActivityPub::QuoteRequestWorker)
+  end
+
+  it 'allows quotes with spoilers and no text' do
+    account = Fabricate(:account)
+    quoted_status = Fabricate(:status, account: Fabricate(:account, domain: 'example.com'))
+
+    expect { subject.call(account, spoiler_text: 'test', quoted_status: quoted_status) }
+      .to enqueue_sidekiq_job(ActivityPub::QuoteRequestWorker)
+  end
+
+  it 'correctly downgrades visibility for private self-quotes' do
+    account = Fabricate(:account)
+    quoted_status = Fabricate(:status, account: account, visibility: :private)
+
+    status = subject.call(account, text: 'test', quoted_status: quoted_status)
+    expect(status).to be_private_visibility
+  end
+
+  it 'correctly preserves visibility for private mentions self-quoting private posts' do
+    account = Fabricate(:account)
+    quoted_status = Fabricate(:status, account: account, visibility: :private)
+
+    status = subject.call(account, text: 'test', quoted_status: quoted_status, visibility: 'direct')
+    expect(status).to be_direct_visibility
+  end
+
   it 'returns existing status when used twice with idempotency key' do
     account = Fabricate(:account)
-    status1 = subject.call(account, text: 'test', idempotency: 'meepmeep')
-    status2 = subject.call(account, text: 'test', idempotency: 'meepmeep')
+    status1 = described_class.new.call(account, text: 'test', idempotency: 'meepmeep')
+    status2 = described_class.new.call(account, text: 'test', idempotency: 'meepmeep')
     expect(status2.id).to eq status1.id
   end
 

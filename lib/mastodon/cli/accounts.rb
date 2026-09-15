@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require 'set'
 require_relative 'base'
 
 module Mastodon::CLI
@@ -18,7 +17,6 @@ module Mastodon::CLI
     LONG_DESC
     def rotate(username = nil)
       if options[:all]
-        processed = 0
         delay     = 0
         scope     = Account.local.without_suspended
         progress  = create_progress_bar(scope.count)
@@ -27,14 +25,13 @@ module Mastodon::CLI
           accounts.each do |account|
             rotate_keys_for_account(account, delay)
             progress.increment
-            processed += 1
           end
 
           delay += 5.minutes
         end
 
         progress.finish
-        say("OK, rotated keys for #{processed} accounts", :green)
+        say("OK, rotated keys for #{progress.progress} accounts", :green)
       elsif username.present?
         rotate_keys_for_account(Account.find_local(username))
         say('OK', :green)
@@ -68,7 +65,7 @@ module Mastodon::CLI
       With the --approve option, the account will be approved.
     LONG_DESC
     def create(username)
-      role_id  = nil
+      role_id = nil
 
       if options[:role]
         role = UserRole.find_by(name: options[:role])
@@ -80,7 +77,14 @@ module Mastodon::CLI
 
       account  = Account.new(username: username)
       password = SecureRandom.hex
-      user     = User.new(email: options[:email], password: password, agreement: true, role_id: role_id, confirmed_at: options[:confirmed] ? Time.now.utc : nil, bypass_invite_request_check: true)
+      user = User.new(
+        email: options[:email],
+        password: password,
+        agreement: true,
+        role_id: role_id,
+        confirmed_at: options[:confirmed] ? Time.now.utc : nil,
+        bypass_registration_checks: true
+      )
 
       if options[:reattach]
         account = Account.find_local(username) || Account.new(username: username)
@@ -96,7 +100,8 @@ module Mastodon::CLI
       end
 
       account.suspended_at = nil
-      user.account         = account
+      account.requested_deletion_at = nil
+      user.account = account
 
       if user.save
         if options[:confirmed]
@@ -159,13 +164,16 @@ module Mastodon::CLI
         user.role_id = nil
       end
 
-      password = SecureRandom.hex if options[:reset_password]
-      user.password = password if options[:reset_password]
       user.email = options[:email] if options[:email]
       user.disabled = false if options[:enable]
       user.disabled = true if options[:disable]
       user.approved = true if options[:approve]
-      user.otp_required_for_login = false if options[:disable_2fa]
+      user.disable_two_factor! if options[:disable_2fa]
+
+      # Password changes are a little different, as we also need to ensure
+      # sessions, subscriptions, and access tokens are revoked after changing:
+      password = SecureRandom.hex if options[:reset_password]
+      user.change_password!(password) if options[:reset_password]
 
       if user.save
         user.confirm if options[:confirm]
@@ -243,25 +251,6 @@ module Mastodon::CLI
       say('OK', :green)
     end
 
-    desc 'fix-duplicates', 'Find duplicate remote accounts and merge them'
-    option :dry_run, type: :boolean
-    long_desc <<-LONG_DESC
-      Merge known remote accounts sharing an ActivityPub actor identifier.
-
-      Such duplicates can occur when a remote server admin misconfigures their
-      domain configuration.
-    LONG_DESC
-    def fix_duplicates
-      Account.remote.select(:uri, 'count(*)').group(:uri).having('count(*) > 1').pluck(:uri).each do |uri|
-        say("Duplicates found for #{uri}")
-        begin
-          ActivityPub::FetchRemoteAccountService.new.call(uri) unless dry_run?
-        rescue => e
-          say("Error processing #{uri}: #{e}", :red)
-        end
-      end
-    end
-
     desc 'backup USERNAME', 'Request a backup for a user'
     long_desc <<-LONG_DESC
       Request a new backup for an account with a given USERNAME.
@@ -305,7 +294,7 @@ module Mastodon::CLI
 
         begin
           code = Request.new(:head, account.uri).perform(&:code)
-        rescue HTTP::TimeoutError, HTTP::ConnectionError, OpenSSL::SSL::SSLError, Mastodon::PrivateNetworkAddressError
+        rescue *Mastodon::HTTP_CONNECTION_ERRORS, Mastodon::PrivateNetworkAddressError
           skip_domains << account.domain
         end
 
@@ -322,7 +311,9 @@ module Mastodon::CLI
 
       unless skip_domains.empty?
         say('The following domains were not available during the check:', :yellow)
-        skip_domains.each { |domain| say("    #{domain}") }
+        shell.indent(2) do
+          skip_domains.each { |domain| say(domain) }
+        end
       end
     end
 
@@ -431,7 +422,6 @@ module Mastodon::CLI
       total    += account.following.reorder(nil).count if options[:follows]
       total    += account.followers.reorder(nil).count if options[:followers]
       progress  = create_progress_bar(total)
-      processed = 0
 
       if options[:follows]
         account.following.reorder(nil).find_each do |target_account|
@@ -440,7 +430,6 @@ module Mastodon::CLI
           progress.log pastel.red("Error processing #{target_account.id}: #{e}")
         ensure
           progress.increment
-          processed += 1
         end
 
         BootstrapTimelineWorker.perform_async(account.id)
@@ -453,12 +442,11 @@ module Mastodon::CLI
           progress.log pastel.red("Error processing #{target_account.id}: #{e}")
         ensure
           progress.increment
-          processed += 1
         end
       end
 
       progress.finish
-      say("Processed #{processed} relationships", :green, true)
+      say("Processed #{progress.progress} relationships", :green, true)
     end
 
     option :number, type: :numeric, aliases: [:n]
@@ -502,17 +490,7 @@ module Mastodon::CLI
       - not muted/blocked by us
     LONG_DESC
     def prune
-      query = Account.remote.where.not(actor_type: %i(Application Service))
-      query = query.where('NOT EXISTS (SELECT 1 FROM mentions WHERE account_id = accounts.id)')
-      query = query.where('NOT EXISTS (SELECT 1 FROM favourites WHERE account_id = accounts.id)')
-      query = query.where('NOT EXISTS (SELECT 1 FROM statuses WHERE account_id = accounts.id)')
-      query = query.where('NOT EXISTS (SELECT 1 FROM follows WHERE account_id = accounts.id OR target_account_id = accounts.id)')
-      query = query.where('NOT EXISTS (SELECT 1 FROM blocks WHERE account_id = accounts.id OR target_account_id = accounts.id)')
-      query = query.where('NOT EXISTS (SELECT 1 FROM mutes WHERE target_account_id = accounts.id)')
-      query = query.where('NOT EXISTS (SELECT 1 FROM reports WHERE target_account_id = accounts.id)')
-      query = query.where('NOT EXISTS (SELECT 1 FROM follow_requests WHERE account_id = accounts.id OR target_account_id = accounts.id)')
-
-      _, deleted = parallelize_with_progress(query) do |account|
+      _, deleted = parallelize_with_progress(prunable_accounts) do |account|
         next if account.bot? || account.group?
         next if account.suspended?
         next if account.silenced?
@@ -577,6 +555,31 @@ module Mastodon::CLI
 
     private
 
+    def prunable_accounts
+      Account
+        .remote
+        .non_automated
+        .where.not(referencing_account(Mention, :account_id))
+        .where.not(referencing_account(Favourite, :account_id))
+        .where.not(referencing_account(Status, :account_id))
+        .where.not(referencing_account(Follow, :account_id))
+        .where.not(referencing_account(Follow, :target_account_id))
+        .where.not(referencing_account(Block, :account_id))
+        .where.not(referencing_account(Block, :target_account_id))
+        .where.not(referencing_account(Mute, :target_account_id))
+        .where.not(referencing_account(Report, :target_account_id))
+        .where.not(referencing_account(FollowRequest, :account_id))
+        .where.not(referencing_account(FollowRequest, :target_account_id))
+    end
+
+    def referencing_account(model, attribute)
+      model
+        .where(model.arel_table[attribute].eq Account.arel_table[:id])
+        .select(1)
+        .arel
+        .exists
+    end
+
     def report_errors(errors)
       message = errors.map do |error|
         <<~STRING
@@ -591,10 +594,22 @@ module Mastodon::CLI
     def rotate_keys_for_account(account, delay = 0)
       fail_with_message 'No such account' if account.nil?
 
-      old_key = account.private_key
+      old_key = account.keypair
       new_key = OpenSSL::PKey::RSA.new(2048)
-      account.update(private_key: new_key.to_pem, public_key: new_key.public_key.to_pem)
-      ActivityPub::UpdateDistributionWorker.perform_in(delay, account.id, { 'sign_with' => old_key })
+
+      account.update(private_key: nil, public_key: '', keypairs: [account.keypairs.build(local_fragment: '#main-key', type: :rsa, public_key: new_key.public_key.to_pem, private_key: new_key.to_pem)])
+
+      ActivityPub::UpdateDistributionWorker.perform_in(
+        delay,
+        account.id,
+        {
+          'sign_with' => {
+            'private_key' => old_key.private_key,
+            'local_fragment' => old_key.local_fragment,
+            'type' => old_key.type,
+          },
+        }
+      )
     end
   end
 end

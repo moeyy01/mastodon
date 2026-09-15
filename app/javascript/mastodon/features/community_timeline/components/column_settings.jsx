@@ -1,9 +1,11 @@
 import PropTypes from 'prop-types';
 import { PureComponent } from 'react';
 
-import { injectIntl, FormattedMessage } from 'react-intl';
+import { FormattedMessage } from 'react-intl';
 
 import ImmutablePropTypes from 'react-immutable-proptypes';
+
+import { injectIntl } from '@/mastodon/components/intl';
 
 import SettingToggle from '../../notifications/components/setting_toggle';
 
@@ -21,9 +23,11 @@ class ColumnSettings extends PureComponent {
 
     return (
       <div className='column-settings'>
-        <div className='column-settings__row'>
-          <SettingToggle settings={settings} settingPath={['other', 'onlyMedia']} onChange={onChange} label={<FormattedMessage id='community.column_settings.media_only' defaultMessage='Media only' />} />
-        </div>
+        <section>
+          <div className='column-settings__row'>
+            <SettingToggle settings={settings} settingPath={['other', 'onlyMedia']} onChange={onChange} label={<FormattedMessage id='community.column_settings.media_only' defaultMessage='Media only' />} />
+          </div>
+        </section>
       </div>
     );
   }

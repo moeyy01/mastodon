@@ -1,12 +1,20 @@
 import type { ChangeEventHandler } from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect } from 'react';
 
 import { defineMessages, useIntl } from 'react-intl';
 
-import { Helmet } from 'react-helmet';
-
 import { List as ImmutableList } from 'immutable';
 
+import { Helmet } from '@unhead/react/helmet';
+
+import { Column } from '@/mastodon/components/column';
+import { ColumnHeader as LegacyColumnHeader } from '@/mastodon/components/column/header';
+import {
+  ColumnHeader,
+  ColumnSettingsMenu,
+} from '@/mastodon/components/column_header';
+import { MultiColumnMenuItems } from '@/mastodon/components/column_header/multicolumn_settings';
+import { isRedesignEnabled } from '@/mastodon/utils/environment';
 import PeopleIcon from '@/material-icons/400-24px/group.svg?react';
 import {
   addColumn,
@@ -15,12 +23,11 @@ import {
   changeColumnParams,
 } from 'mastodon/actions/columns';
 import { fetchDirectory, expandDirectory } from 'mastodon/actions/directory';
-import Column from 'mastodon/components/column';
-import { ColumnHeader } from 'mastodon/components/column_header';
 import { LoadMore } from 'mastodon/components/load_more';
 import { LoadingIndicator } from 'mastodon/components/loading_indicator';
 import { RadioButton } from 'mastodon/components/radio_button';
-import ScrollContainer from 'mastodon/containers/scroll_container';
+import { ScrollContainer } from 'mastodon/containers/scroll_container';
+import { useSearchParam } from 'mastodon/hooks/useSearchParam';
 import { useAppDispatch, useAppSelector } from 'mastodon/store';
 
 import { AccountCard } from './components/account_card';
@@ -47,18 +54,17 @@ export const Directory: React.FC<{
   const intl = useIntl();
   const dispatch = useAppDispatch();
 
-  const [state, setState] = useState<{
-    order: string | null;
-    local: boolean | null;
-  }>({
-    order: null,
-    local: null,
-  });
+  const [orderParam, setOrderParam] = useSearchParam('order');
+  const [localParam, setLocalParam] = useSearchParam('local');
 
-  const column = useRef<Column>(null);
+  let localParamBool: boolean | undefined;
 
-  const order = state.order ?? params?.order ?? 'active';
-  const local = state.local ?? params?.local ?? false;
+  if (localParam === 'false') {
+    localParamBool = false;
+  }
+
+  const order = orderParam ?? params?.order ?? 'active';
+  const local = localParamBool ?? params?.local ?? true;
 
   const handlePin = useCallback(() => {
     if (columnId) {
@@ -80,6 +86,9 @@ export const Directory: React.FC<{
     (state) =>
       state.user_lists.getIn(['directory', 'isLoading'], true) as boolean,
   );
+  const hasMore = useAppSelector(
+    (state) => !!state.user_lists.getIn(['directory', 'next']),
+  );
 
   useEffect(() => {
     void dispatch(fetchDirectory({ order, local }));
@@ -92,19 +101,15 @@ export const Directory: React.FC<{
     [dispatch, columnId],
   );
 
-  const handleHeaderClick = useCallback(() => {
-    column.current?.scrollTop();
-  }, []);
-
   const handleChangeOrder = useCallback<ChangeEventHandler<HTMLInputElement>>(
     (e) => {
       if (columnId) {
         dispatch(changeColumnParams(columnId, ['order'], e.target.value));
       } else {
-        setState((s) => ({ order: e.target.value, local: s.local }));
+        setOrderParam(e.target.value);
       }
     },
-    [dispatch, columnId],
+    [dispatch, columnId, setOrderParam],
   );
 
   const handleChangeLocal = useCallback<ChangeEventHandler<HTMLInputElement>>(
@@ -113,11 +118,13 @@ export const Directory: React.FC<{
         dispatch(
           changeColumnParams(columnId, ['local'], e.target.value === '1'),
         );
+      } else if (e.target.value === '1') {
+        setLocalParam('true');
       } else {
-        setState((s) => ({ local: e.target.value === '1', order: s.order }));
+        setLocalParam('false');
       }
     },
-    [dispatch, columnId],
+    [dispatch, columnId, setLocalParam],
   );
 
   const handleLoadMore = useCallback(() => {
@@ -125,6 +132,7 @@ export const Directory: React.FC<{
   }, [dispatch, order, local]);
 
   const pinned = !!columnId;
+  const initialLoad = isLoading && accountIds.size === 0;
 
   const scrollableArea = (
     <div className='scrollable'>
@@ -165,7 +173,7 @@ export const Directory: React.FC<{
       </div>
 
       <div className='directory__list'>
-        {isLoading ? (
+        {initialLoad ? (
           <LoadingIndicator />
         ) : (
           accountIds.map((accountId) => (
@@ -174,29 +182,51 @@ export const Directory: React.FC<{
         )}
       </div>
 
-      <LoadMore onClick={handleLoadMore} visible={!isLoading} />
+      <LoadMore
+        onClick={handleLoadMore}
+        visible={!initialLoad && hasMore}
+        loading={isLoading}
+      />
     </div>
   );
 
   return (
     <Column
       bindToDocument={!multiColumn}
-      ref={column}
       label={intl.formatMessage(messages.title)}
     >
-      <ColumnHeader
-        icon='address-book-o'
-        iconComponent={PeopleIcon}
-        title={intl.formatMessage(messages.title)}
-        onPin={handlePin}
-        onMove={handleMove}
-        onClick={handleHeaderClick}
-        pinned={pinned}
-        multiColumn={multiColumn}
-      />
+      {isRedesignEnabled() ? (
+        <ColumnHeader
+          title={intl.formatMessage(messages.title)}
+          withBackButton={multiColumn && !pinned && 'auto'}
+          extraButtons={
+            multiColumn && (
+              <ColumnSettingsMenu
+                labelPrefix={intl.formatMessage(messages.title)}
+              >
+                <MultiColumnMenuItems
+                  pinned={pinned}
+                  onPin={handlePin}
+                  onMove={handleMove}
+                />
+              </ColumnSettingsMenu>
+            )
+          }
+        />
+      ) : (
+        <LegacyColumnHeader
+          icon='address-book-o'
+          iconComponent={PeopleIcon}
+          title={intl.formatMessage(messages.title)}
+          onPin={handlePin}
+          onMove={handleMove}
+          pinned={pinned}
+          multiColumn={multiColumn}
+          scrollTopOnClick
+        />
+      )}
 
       {multiColumn && !pinned ? (
-        // @ts-expect-error ScrollContainer is not properly typed yet
         <ScrollContainer scrollKey='directory'>
           {scrollableArea}
         </ScrollContainer>

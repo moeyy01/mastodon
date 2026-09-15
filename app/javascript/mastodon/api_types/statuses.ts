@@ -1,9 +1,11 @@
 // See app/serializers/rest/status_serializer.rb
 
 import type { ApiAccountJSON } from './accounts';
+import type { ApiCollectionJSON } from './collections';
 import type { ApiCustomEmojiJSON } from './custom_emoji';
 import type { ApiMediaAttachmentJSON } from './media_attachments';
 import type { ApiPollJSON } from './polls';
+import type { ApiQuoteJSON, ApiQuotePolicyJSON } from './quotes';
 
 // See app/modals/status.rb
 export type StatusVisibility =
@@ -40,22 +42,44 @@ export interface ApiPreviewCardJSON {
   url: string;
   title: string;
   description: string;
-  language: string;
-  type: string;
+  language: string | null;
+  type: 'video' | 'link';
   author_name: string;
   author_url: string;
-  author_account?: ApiAccountJSON;
   provider_name: string;
   provider_url: string;
   html: string;
   width: number;
   height: number;
-  image: string;
+  image: string | null;
   image_description: string;
   embed_url: string;
   blurhash: string;
-  published_at: string;
+  published_at: string | null;
   authors: ApiPreviewCardAuthorJSON[];
+}
+
+export type FilterContext =
+  | 'home'
+  | 'notifications'
+  | 'public'
+  | 'thread'
+  | 'account';
+
+export interface ApiFilterJSON {
+  id: string;
+  title: string;
+  context: FilterContext;
+  expires_at: string;
+  filter_action: 'warn' | 'hide';
+  keywords?: unknown[]; // TODO: FilterKeywordSerializer
+  statuses?: unknown[]; // TODO: FilterStatusSerializer
+}
+
+export interface ApiFilterResultJSON {
+  filter: ApiFilterJSON;
+  keyword_matches: string[];
+  status_matches: string[];
 }
 
 export interface ApiStatusJSON {
@@ -71,17 +95,17 @@ export interface ApiStatusJSON {
   url: string;
   replies_count: number;
   reblogs_count: number;
-  favorites_count: number;
+  favourites_count: number;
+  quotes_count: number;
   edited_at?: string;
 
-  favorited?: boolean;
+  favourited?: boolean;
   reblogged?: boolean;
   muted?: boolean;
   bookmarked?: boolean;
   pinned?: boolean;
 
-  // filtered: FilterResult[]
-  filtered: unknown; // TODO
+  filtered?: ApiFilterResultJSON[];
   content?: string;
   text?: string;
 
@@ -93,7 +117,40 @@ export interface ApiStatusJSON {
 
   tags: ApiTagJSON[];
   emojis: ApiCustomEmojiJSON[];
+  tagged_collections: ApiCollectionJSON[];
 
   card?: ApiPreviewCardJSON;
   poll?: ApiPollJSON;
+  quote?: ApiQuoteJSON;
+  quote_approval?: ApiQuotePolicyJSON;
+}
+
+export interface ApiContextJSON {
+  ancestors: ApiStatusJSON[];
+  descendants: ApiStatusJSON[];
+}
+
+export interface ApiStatusSourceJSON {
+  id: string;
+  text: string;
+  spoiler_text: string;
+}
+
+export interface ApiStatusTranslationJSON {
+  detected_source_language: string;
+  language: string;
+  provider: string;
+  contentHtml: string;
+  spoilerHtml: string;
+  spoiler_text: string;
+  poll?: {
+    id: string;
+    options: { title: string }[];
+  };
+}
+
+export function isStatusVisibility(
+  visibility: string,
+): visibility is StatusVisibility {
+  return ['public', 'unlisted', 'private', 'direct'].includes(visibility);
 }

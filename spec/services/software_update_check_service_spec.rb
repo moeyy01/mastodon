@@ -9,7 +9,7 @@ RSpec.describe SoftwareUpdateCheckService do
     let(:full_update_check_url) { "#{update_check_url}?version=#{Mastodon::Version.to_s.split('+')[0]}" }
 
     let(:devops_role)     { Fabricate(:user_role, name: 'DevOps', permissions: UserRole::FLAGS[:view_devops]) }
-    let(:owner_user)      { Fabricate(:user, role: UserRole.find_by(name: 'Owner')) }
+    let(:owner_user)      { Fabricate(:owner_user) }
     let(:old_devops_user) { Fabricate(:user) }
     let(:none_user)       { Fabricate(:user, role: devops_role) }
     let(:patch_user)      { Fabricate(:user, role: devops_role) }
@@ -27,6 +27,7 @@ RSpec.describe SoftwareUpdateCheckService do
     before do
       Fabricate(:software_update, version: '3.5.0', type: 'major', urgent: false)
       Fabricate(:software_update, version: '42.13.12', type: 'major', urgent: false)
+      Fabricate(:software_update, version: 'Malformed', type: 'major', urgent: false)
 
       owner_user.settings.update('notification_emails.software_updates': 'all')
       owner_user.save!
@@ -50,25 +51,42 @@ RSpec.describe SoftwareUpdateCheckService do
       end
 
       it 'deletes outdated update records but keeps valid update records' do
-        expect { subject.call }.to change { SoftwareUpdate.pluck(:version).sort }.from(['3.5.0', '42.13.12']).to(['42.13.12'])
+        expect { subject.call }.to change { SoftwareUpdate.pluck(:version).sort }.from(['3.5.0', '42.13.12', 'Malformed']).to(['42.13.12'])
+      end
+    end
+
+    context 'when the update server returns invalid response body' do
+      before do
+        stub_request(:get, full_update_check_url).to_return(status: 200, body: 'XXX')
+      end
+
+      it 'handles the error and returns' do
+        expect(subject.call).to be_nil
       end
     end
 
     context 'when the server returns new versions' do
+      let(:deprecation_date) { nil }
+
       let(:server_json) do
         {
+          currentVersion: {
+            endOfSupport: deprecation_date&.iso8601,
+          },
           updatesAvailable: [
             {
               version: '4.2.1',
               urgent: false,
               type: 'patch',
               releaseNotes: 'https://github.com/mastodon/mastodon/releases/v4.2.1',
+              endOfSupport: '2026-01-08',
             },
             {
               version: '4.3.0',
               urgent: false,
               type: 'minor',
               releaseNotes: 'https://github.com/mastodon/mastodon/releases/v4.3.0',
+              endOfSupport: '2026-05-06',
             },
             {
               version: '5.0.0',
@@ -81,11 +99,96 @@ RSpec.describe SoftwareUpdateCheckService do
       end
 
       before do
-        stub_request(:get, full_update_check_url).to_return(body: Oj.dump(server_json))
+        stub_request(:get, full_update_check_url).to_return(body: server_json.to_json)
       end
 
       it 'updates the list of known updates' do
-        expect { subject.call }.to change { SoftwareUpdate.pluck(:version).sort }.from(['3.5.0', '42.13.12']).to(['4.2.1', '4.3.0', '5.0.0'])
+        expect { subject.call }.to change { SoftwareUpdate.pluck(:version).sort }.from(['3.5.0', '42.13.12', 'Malformed']).to(['4.2.1', '4.3.0', '5.0.0'])
+      end
+
+      context 'when server returns deprecation in the distant future' do
+        let(:deprecation_date) { 5.years.from_now.to_date }
+
+        it 'updates the software deprecation info' do
+          expect { subject.call }
+            .to change { SoftwareDeprecation.pluck(:end_of_support, :warning_issued) }.from([]).to([[deprecation_date, 'none']])
+        end
+
+        context 'when an irrelevant deprecation was stored' do
+          before do
+            SoftwareDeprecation.create!(branch: '4.3', end_of_support: '2026-05-06'.to_date, warning_issued: :out_of_support_warning)
+          end
+
+          it 'updates the software deprecation info' do
+            expect { subject.call }
+              .to change { SoftwareDeprecation.pluck(:end_of_support, :warning_issued) }.from([['2026-05-06'.to_date, 'out_of_support_warning']]).to([[deprecation_date, 'none']])
+          end
+        end
+      end
+
+      context 'when server returns deprecation in 2 months' do
+        let(:deprecation_date) { 2.months.from_now.to_date }
+
+        it 'updates the software deprecation info' do
+          expect { subject.call }
+            .to change { SoftwareDeprecation.pluck(:end_of_support, :warning_issued) }.from([]).to([[deprecation_date, 'three_months_warning']])
+        end
+
+        context 'when an irrelevant deprecation was stored' do
+          before do
+            SoftwareDeprecation.create!(branch: '4.3', end_of_support: '2026-05-06'.to_date, warning_issued: :out_of_support_warning)
+          end
+
+          it 'updates the software deprecation info and sends email' do
+            expect { subject.call }
+              .to change { SoftwareDeprecation.pluck(:end_of_support, :warning_issued) }.from([['2026-05-06'.to_date, 'out_of_support_warning']]).to([[deprecation_date, 'three_months_warning']])
+              .and(have_enqueued_mail(AdminMailer, :end_of_support_three_months_warning).with(hash_including(params: { recipient: owner_user.account })).once)
+          end
+        end
+      end
+
+      context 'when server returns deprecation in 1 week' do
+        let(:deprecation_date) { 1.week.from_now.to_date }
+
+        it 'updates the software deprecation info' do
+          expect { subject.call }
+            .to change { SoftwareDeprecation.pluck(:end_of_support, :warning_issued) }.from([]).to([[deprecation_date, 'two_weeks_warning']])
+            .and(have_enqueued_mail(AdminMailer, :end_of_support_two_weeks_warning).with(hash_including(params: { recipient: owner_user.account })).once)
+        end
+
+        context 'when an irrelevant deprecation was stored' do
+          before do
+            SoftwareDeprecation.create!(branch: '4.3', end_of_support: '2026-05-06'.to_date, warning_issued: :out_of_support_warning)
+          end
+
+          it 'updates the software deprecation info and sends email' do
+            expect { subject.call }
+              .to change { SoftwareDeprecation.pluck(:end_of_support, :warning_issued) }.from([['2026-05-06'.to_date, 'out_of_support_warning']]).to([[deprecation_date, 'two_weeks_warning']])
+              .and(have_enqueued_mail(AdminMailer, :end_of_support_two_weeks_warning).with(hash_including(params: { recipient: owner_user.account })).once)
+          end
+        end
+      end
+
+      context 'when server returns deprecation in the past' do
+        let(:deprecation_date) { 1.week.ago.to_date }
+
+        it 'updates the software deprecation info' do
+          expect { subject.call }
+            .to change { SoftwareDeprecation.pluck(:end_of_support, :warning_issued) }.from([]).to([[deprecation_date, 'out_of_support_warning']])
+            .and(have_enqueued_mail(AdminMailer, :end_of_support_out_of_support_warning).with(hash_including(params: { recipient: owner_user.account })).once)
+        end
+
+        context 'when an irrelevant deprecation was stored' do
+          before do
+            SoftwareDeprecation.create!(branch: '4.3', end_of_support: '2026-05-06'.to_date, warning_issued: :out_of_support_warning)
+          end
+
+          it 'updates the software deprecation info and sends email' do
+            expect { subject.call }
+              .to change { SoftwareDeprecation.pluck(:end_of_support, :warning_issued) }.from([['2026-05-06'.to_date, 'out_of_support_warning']]).to([[deprecation_date, 'out_of_support_warning']])
+              .and(have_enqueued_mail(AdminMailer, :end_of_support_out_of_support_warning).with(hash_including(params: { recipient: owner_user.account })).once)
+          end
+        end
       end
 
       context 'when no update is urgent' do
@@ -100,6 +203,9 @@ RSpec.describe SoftwareUpdateCheckService do
       context 'when an update is urgent' do
         let(:server_json) do
           {
+            currentVersion: {
+              endOfSupport: nil,
+            },
             updatesAvailable: [
               {
                 version: '5.0.0',
@@ -124,9 +230,10 @@ RSpec.describe SoftwareUpdateCheckService do
 
   context 'when update checking is disabled' do
     around do |example|
-      ClimateControl.modify UPDATE_CHECK_URL: '' do
-        example.run
-      end
+      original = Rails.configuration.x.mastodon.software_update_url
+      Rails.configuration.x.mastodon.software_update_url = ''
+      example.run
+      Rails.configuration.x.mastodon.software_update_url = original
     end
 
     before do
@@ -148,9 +255,10 @@ RSpec.describe SoftwareUpdateCheckService do
     let(:update_check_url) { 'https://api.example.com/update_check' }
 
     around do |example|
-      ClimateControl.modify UPDATE_CHECK_URL: 'https://api.example.com/update_check' do
-        example.run
-      end
+      original = Rails.configuration.x.mastodon.software_update_url
+      Rails.configuration.x.mastodon.software_update_url = 'https://api.example.com/update_check'
+      example.run
+      Rails.configuration.x.mastodon.software_update_url = original
     end
 
     it_behaves_like 'when the feature is enabled'

@@ -29,7 +29,10 @@ RSpec.describe TextFormatter do
       let(:text) { '@alice' }
 
       it 'creates a mention link' do
-        expect(subject).to include '<a href="https://cb6e6126.ngrok.io/@alice" class="u-url mention">@<span>alice</span></a></span>'
+        expect(subject)
+          .to include(<<~LINK.squish)
+            <a href="https://#{Rails.configuration.x.local_domain}/@alice" class="u-url mention">@<span>alice</span></a>
+          LINK
       end
     end
 
@@ -50,7 +53,7 @@ RSpec.describe TextFormatter do
       end
     end
 
-    context 'when given a stand-alone google URL' do
+    context 'when given a stand-alone Google URL' do
       let(:text) { 'http://google.com' }
 
       it 'matches the full URL' do
@@ -280,8 +283,28 @@ RSpec.describe TextFormatter do
       end
     end
 
+    context 'when given a lengthy URL' do
+      let(:text) { 'lorem https://prepitaph.org/wip/web-dovespair/ ipsum' }
+
+      it 'truncates the URL' do
+        expect(subject).to include '<span class="invisible">https://</span>'
+        expect(subject).to include '<span class="ellipsis">prepitaph.org/wip/web-dovespai</span>'
+        expect(subject).to include '<span class="invisible">r/</span>'
+      end
+    end
+
+    context 'when given a sufficiently short URL' do
+      let(:text) { 'lorem https://prepitaph.org/wip/web-devspair/ ipsum' }
+
+      it 'does not truncate the URL' do
+        expect(subject).to include '<span class="invisible">https://</span>'
+        expect(subject).to include '<span class="">prepitaph.org/wip/web-devspair/</span>'
+        expect(subject).to include '<span class="invisible"></span>'
+      end
+    end
+
     context 'when given text containing a hashtag' do
-      let(:text)  { '#hashtag' }
+      let(:text) { '#hashtag' }
 
       it 'creates a hashtag link' do
         expect(subject).to include '/tags/hashtag" class="mention hashtag" rel="tag">#<span>hashtag</span></a>'
@@ -289,7 +312,7 @@ RSpec.describe TextFormatter do
     end
 
     context 'when given text containing a hashtag with Unicode chars' do
-      let(:text)  { '#hashtagタグ' }
+      let(:text) { '#hashtagタグ' }
 
       it 'creates a hashtag link' do
         expect(subject).to include '/tags/hashtag%E3%82%BF%E3%82%B0" class="mention hashtag" rel="tag">#<span>hashtagタグ</span></a>'

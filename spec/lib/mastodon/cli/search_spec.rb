@@ -3,7 +3,7 @@
 require 'rails_helper'
 require 'mastodon/cli/search'
 
-describe Mastodon::CLI::Search do
+RSpec.describe Mastodon::CLI::Search do
   subject { cli.invoke(action, arguments, options) }
 
   let(:cli) { described_class.new }
@@ -36,7 +36,7 @@ describe Mastodon::CLI::Search do
     context 'when server communication raises an error' do
       let(:options) { { reset_chewy: true } }
 
-      before { allow(Chewy::Stash::Specification).to receive(:reset!).and_raise(Elasticsearch::Transport::Transport::Errors::InternalServerError) }
+      before { allow(Chewy::Stash::Specification).to receive(:reset!).and_raise(Elastic::Transport::Transport::Errors::InternalServerError) }
 
       it 'Exits with error message' do
         expect { subject }

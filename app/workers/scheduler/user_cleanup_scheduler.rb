@@ -11,14 +11,16 @@ class Scheduler::UserCleanupScheduler
   def perform
     clean_unconfirmed_accounts!
     clean_discarded_statuses!
+    clean_unconfirmed_email_subscriptions!
   end
 
   private
 
   def clean_unconfirmed_accounts!
-    User.unconfirmed.where(confirmation_sent_at: ..UNCONFIRMED_ACCOUNTS_MAX_AGE_DAYS.days.ago).reorder(nil).find_in_batches do |batch|
+    User.unconfirmed.where(confirmation_sent_at: ..UNCONFIRMED_ACCOUNTS_MAX_AGE_DAYS.days.ago).find_in_batches do |batch|
       # We have to do it separately because of missing database constraints
       AccountModerationNote.where(target_account_id: batch.map(&:account_id)).delete_all
+      WebauthnCredential.where(user_id: batch.map(&:id)).delete_all
       Account.where(id: batch.map(&:account_id)).delete_all
       User.where(id: batch.map(&:id)).delete_all
     end
@@ -29,6 +31,12 @@ class Scheduler::UserCleanupScheduler
       RemovalWorker.push_bulk(statuses) do |status|
         [status.id, { 'immediate' => true, 'skip_streaming' => true }]
       end
+    end
+  end
+
+  def clean_unconfirmed_email_subscriptions!
+    EmailSubscription.unconfirmed.where(created_at: ..UNCONFIRMED_ACCOUNTS_MAX_AGE_DAYS.days.ago).find_in_batches do |batch|
+      EmailSubscription.where(id: batch.map(&:id)).delete_all
     end
   end
 end

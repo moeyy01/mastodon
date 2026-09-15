@@ -2,7 +2,6 @@
 
 class ResolveAccountService < BaseService
   include DomainControlHelper
-  include WebfingerHelper
   include Redisable
   include Lockable
 
@@ -14,16 +13,25 @@ class ResolveAccountService < BaseService
   # @option options [Boolean] :skip_webfinger Do not attempt any webfinger query or refreshing account data
   # @option options [Boolean] :skip_cache Get the latest data from origin even if cache is not due to update yet
   # @option options [Boolean] :suppress_errors When failing, return nil instead of raising an error
+  # @option options [String]  :request_id Used to limit the number of HTTP requests issued from a single outside request
   # @return [Account]
   def call(uri, options = {})
     return if uri.blank?
 
     process_options!(uri, options)
 
+    return ActivityPub::FetchRemoteAccountService.new.call(@account.uri, suppress_errors: @options[:suppress_errors], request_id: options[:request_id]) if @account&.remote? && @account.invalidated_username?
+
     # First of all we want to check if we've got the account
     # record with the URI already, and if so, we can exit early
 
     return if domain_not_allowed?(@domain)
+
+    # Special-case resolving invalid handles
+    if @domain == 'handle.invalid'
+      account = Account.remote.find_by(id: @username)
+      return account if account.invalidated_username? && account.id.to_s == @username
+    end
 
     @account ||= Account.find_remote(@username, @domain)
 
@@ -81,7 +89,7 @@ class ResolveAccountService < BaseService
   end
 
   def process_webfinger!(uri)
-    @webfinger                           = webfinger!("acct:#{uri}")
+    @webfinger = Webfinger.new("acct:#{uri}").perform
     confirmed_username, confirmed_domain = split_acct(@webfinger.subject)
 
     if confirmed_username.casecmp(@username).zero? && confirmed_domain.casecmp(@domain).zero?
@@ -91,7 +99,7 @@ class ResolveAccountService < BaseService
     end
 
     # Account doesn't match, so it may have been redirected
-    @webfinger         = webfinger!("acct:#{confirmed_username}@#{confirmed_domain}")
+    @webfinger = Webfinger.new("acct:#{confirmed_username}@#{confirmed_domain}").perform
     @username, @domain = split_acct(@webfinger.subject)
 
     raise Webfinger::RedirectError, "Too many webfinger redirects for URI #{uri} (stopped at #{@username}@#{@domain})" unless confirmed_username.casecmp(@username).zero? && confirmed_domain.casecmp(@domain).zero?
